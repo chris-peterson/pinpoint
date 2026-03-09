@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
 
@@ -9,12 +10,18 @@ from fastapi import APIRouter, HTTPException, Request
 
 from pinpoint import database as db
 from pinpoint.actions import log_action
-from pinpoint.defaults import defaults_from_source, extract_audio_metadata
-from pinpoint.models import ActionVerb, File, FileStatus
+from pinpoint.defaults import defaults_from_source
+from pinpoint.models import ALL_TAG_FIELDS, ActionVerb, File, FileStatus
 from pinpoint.paths import derive_path
+from pinpoint.tag_writer import write_tags
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/queue", tags=["queue"])
 
+# Attributes derived from file properties (date, extension), never stored as tags.
+# Still passed to derive_path() for path computation.
+DERIVED_ATTRIBUTES = {"year", "month", "class", "name"}
 
 PENDING_FILTER = "status = 'pending' AND skipped_at IS NULL"
 
@@ -122,12 +129,14 @@ async def accept_folder(request: Request):
         field_defaults = defaults_from_source(file.source_path, file.root, input_path)
 
         # Build tags from defaults
-        tag_fields = ("event", "name", "artist", "album", "year", "track", "author", "title", "show", "season", "series")
+        tag_fields = ALL_TAG_FIELDS
         tags: dict[str, list[str]] = {}
         for field in tag_fields:
             value = field_defaults.get(field, "")
             if value:
                 tags[field] = [value]
+                if field in DERIVED_ATTRIBUTES:
+                    continue
                 tag_name = f"{field}:{value}"
                 existing = await db.fetch_one(conn, "SELECT id FROM tags WHERE name = ?", (tag_name,))
                 if existing:
@@ -153,6 +162,14 @@ async def accept_folder(request: Request):
         source = Path(file.source_path)
         if not source.exists():
             continue
+
+        # Write tags to file metadata before moving [TP-4]
+        flat_tags = {k: v[0] for k, v in tags.items() if v}
+        metadata_writes = write_tags(source, flat_tags, file.root, file.file_class)
+        if metadata_writes:
+            await log_action(conn, ActionVerb.TAG_WRITE, file.id, {
+                "writes": [{"field": f, "value": v, "target": t} for f, v, t in metadata_writes],
+            })
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(source), str(output_path))
@@ -243,6 +260,10 @@ async def accept_file(file_id: int, request: Request):
             value = field_defaults.get(field, "")
         if value:
             tags[field] = [value]
+            # Derived attributes (year, month, class) are used for path derivation
+            # but never persisted as tags — they're computed from file properties.
+            if field in DERIVED_ATTRIBUTES:
+                continue
             # Persist the tag to the database
             tag_name = f"{field}:{value}"
             existing = await db.fetch_one(conn, "SELECT id FROM tags WHERE name = ?", (tag_name,))
@@ -274,6 +295,14 @@ async def accept_file(file_id: int, request: Request):
     source = Path(file.source_path)
     if not source.exists():
         raise HTTPException(400, "Source file no longer exists")
+
+    # Write tags to file metadata before moving [TP-4]
+    flat_tags = {k: v[0] for k, v in tags.items() if v}
+    metadata_writes = write_tags(source, flat_tags, file.root, file.file_class)
+    if metadata_writes:
+        await log_action(conn, ActionVerb.TAG_WRITE, file_id, {
+            "writes": [{"field": f, "value": v, "target": t} for f, v, t in metadata_writes],
+        })
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(source), str(output_path))

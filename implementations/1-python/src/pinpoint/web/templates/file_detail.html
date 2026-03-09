@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}{{ file.managed_path | basename }} — Pinpoint{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb">
+    <ul>
+        <li><a href="/library">Library</a></li>
+        <li>{{ file.managed_path | basename }}</li>
+    </ul>
+</nav>
+
+<div class="grid">
+    <div class="preview-panel">
+        {% if file.file_class == "image" %}
+            <img src="/api/files/{{ file.id }}/content" alt="Preview" class="preview-image">
+        {% elif file.file_class == "video" %}
+            <video src="/api/files/{{ file.id }}/content" controls class="preview-image"></video>
+        {% elif file.file_class == "audio" %}
+            <audio src="/api/files/{{ file.id }}/content" controls></audio>
+        {% endif %}
+
+        <div class="file-info">
+            <dl>
+                <dt>Filename</dt>
+                <dd>{{ (file.managed_path or file.source_path) | basename }}</dd>
+                <dt>Path</dt>
+                <dd><small>{{ file.managed_path or file.source_path }}</small></dd>
+                <dt>Root</dt>
+                <dd><code>{{ file.root }}</code></dd>
+                <dt>Type</dt>
+                <dd>{{ file.file_class }}</dd>
+                {% if file.creation_date %}
+                <dt>Created</dt>
+                <dd>{{ file.creation_date.strftime('%Y-%m-%d %H:%M') }}</dd>
+                {% endif %}
+                {% if file.managed_date %}
+                <dt>Managed</dt>
+                <dd>{{ file.managed_date.strftime('%Y-%m-%d %H:%M') }}</dd>
+                {% endif %}
+            </dl>
+            <a href="#" class="reveal-link" onclick="fetch('/api/files/{{ file.id }}/reveal', {method:'POST'}); return false;">
+                Show in Finder
+            </a>
+        </div>
+    </div>
+
+    <div class="tag-panel">
+        <h3>Tags</h3>
+
+        <form id="tag-form">
+            {% for field_id, label in root_fields %}
+                {% set current_val = tag_values.get(field_id, '') %}
+                <label for="{{ field_id }}">{{ label }}</label>
+                <input type="text" id="{{ field_id }}" name="{{ field_id }}"
+                    value="{{ current_val }}"
+                    class="tag-input"
+                    list="{{ field_id }}-suggestions">
+                <datalist id="{{ field_id }}-suggestions"></datalist>
+            {% endfor %}
+
+        </form>
+
+        <article id="path-preview-container">
+            <header>Output path</header>
+            <code id="path-preview">{{ file.managed_path or file.source_path }}</code>
+        </article>
+
+        <div class="queue-actions">
+            <button type="button" id="save-btn" onclick="saveTags({{ file.id }})">
+                Save
+            </button>
+        </div>
+
+        <script>
+        function saveTags(fileId) {
+            const form = document.getElementById('tag-form');
+            const formData = new FormData(form);
+            fetch('/api/files/' + fileId + '/tags', {
+                method: 'PUT',
+                body: formData
+            }).then(r => r.json()).then(data => {
+                if (data.relocated) {
+                    window.location.reload();
+                } else {
+                    document.getElementById('path-preview').textContent = data.path;
+                }
+            });
+        }
+        </script>
+    </div>
+</div>
+{% endblock %}

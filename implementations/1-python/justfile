@@ -14,3 +14,8 @@ lint:
 
 format:
     cd {{justfile_directory()}} && uv run ruff format src/
+
+# Reset database (re-created on next run)
+reset:
+    rm -rf {{justfile_directory()}}/.data
+    @echo "Database reset. Will be re-created on next run."

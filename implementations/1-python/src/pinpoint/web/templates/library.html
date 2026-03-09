@@ -4,39 +4,44 @@
 {% block content %}
 <h2>Library <small>({{ file_count }} files)</small></h2>
 
-{% macro render_tree(node, depth=0) %}
+{% macro render_tree(node, depth=0, parent_path="") %}
 <ul class="tree{% if depth == 0 %} tree-root{% endif %}">
     {% for key, value in node.items() | sort %}
         {% if value is mapping and value.get("_file") %}
             <li class="tree-file">
                 {% if value["class"] == "audio" %}
-                    <a href="/api/files/{{ value.id }}/content" class="tree-leaf" data-class="{{ value['class'] }}">
+                    <a href="/file/{{ value.id }}" class="tree-leaf" data-class="{{ value['class'] }}">
                         <span class="icon">&#9654;</span>
                         {{ key }}
                     </a>
                 {% elif value["class"] == "image" %}
-                    <a href="/api/files/{{ value.id }}/content" target="_blank" class="tree-leaf" data-class="{{ value['class'] }}">
+                    <a href="/file/{{ value.id }}" class="tree-leaf" data-class="{{ value['class'] }}">
                         <span class="icon">&#128444;</span>
                         {{ key }}
                     </a>
                 {% elif value["class"] == "video" %}
-                    <a href="/api/files/{{ value.id }}/content" target="_blank" class="tree-leaf" data-class="{{ value['class'] }}">
+                    <a href="/file/{{ value.id }}" class="tree-leaf" data-class="{{ value['class'] }}">
                         <span class="icon">&#127910;</span>
                         {{ key }}
                     </a>
                 {% else %}
-                    <a href="/api/files/{{ value.id }}/content" target="_blank" class="tree-leaf">
+                    <a href="/file/{{ value.id }}" class="tree-leaf">
                         <span class="icon">&#128196;</span>
                         {{ key }}
                     </a>
                 {% endif %}
                 {% if value.favorite %}<span class="star">&#9733;</span>{% endif %}
+                <a href="#" class="reveal-link" onclick="revealFile({{ value.id }}); return false;" title="Show in Finder">&#8599;</a>
             </li>
         {% elif value is mapping %}
+            {% set folder_path = (parent_path + "/" + key) if parent_path else key %}
             <li class="tree-dir">
                 <details open>
-                    <summary><span class="icon">&#128193;</span> {{ key }}</summary>
-                    {{ render_tree(value, depth + 1) }}
+                    <summary>
+                        <span class="icon">&#128193;</span> {{ key }}
+                        <a href="#" class="reveal-link" onclick="revealFolder('{{ folder_path }}'); return false;" title="Show in Finder">&#8599;</a>
+                    </summary>
+                    {{ render_tree(value, depth + 1, folder_path) }}
                 </details>
             </li>
         {% endif %}
@@ -46,6 +51,16 @@
 
 {% if tree %}
     {{ render_tree(tree) }}
+    <script>
+    function revealFile(id) {
+        fetch('/api/files/' + id + '/reveal', { method: 'POST' });
+    }
+    function revealFolder(path) {
+        const form = new FormData();
+        form.append('path', path);
+        fetch('/api/files/reveal-folder', { method: 'POST', body: form });
+    }
+    </script>
 {% else %}
 <article>
     <p>No managed files yet. Accept files from the queue to see them here.</p>

@@ -111,15 +111,16 @@ def _derive_books(
     original_filename: str,
     creation_date: date | None,
 ) -> PurePosixPath:
-    """books/author/title/name.ext"""
+    """books/author/series*/name.ext"""
     stem, ext = _get_name(tags, original_filename)
 
     author = _first_or(tags, "author", "_unknown")
     parts: list[str] = ["books", author]
 
-    titles = tags.get("title", [])
-    if titles:
-        parts.append(titles[0])
+    series = tags.get("series", [])
+    if series:
+        segments = series[0].split(":")
+        parts.extend(segments)
 
     parts.append(f"{stem}{ext}")
     return PurePosixPath(*parts)
@@ -161,14 +162,20 @@ def _derive_movies(
     original_filename: str,
     creation_date: date | None,
 ) -> PurePosixPath:
-    """movies/series/name.ext (series is optional)"""
+    """movies/series*/name [year].ext"""
     stem, ext = _get_name(tags, original_filename)
 
     parts: list[str] = ["movies"]
 
     series = tags.get("series", [])
     if series:
-        parts.append(series[0])
+        segments = series[0].split(":")
+        parts.extend(segments)
+
+    # [OP-6] Append [year] to filename for disambiguation
+    years = tags.get("year", [])
+    if years and not stem.endswith(f"[{years[0]}]"):
+        stem = f"{stem} [{years[0]}]"
 
     parts.append(f"{stem}{ext}")
     return PurePosixPath(*parts)
@@ -179,10 +186,16 @@ def _derive_comedy(
     original_filename: str,
     creation_date: date | None,
 ) -> PurePosixPath:
-    """comedy/artist/name.ext"""
+    """comedy/artist/[year] name.ext"""
     stem, ext = _get_name(tags, original_filename)
 
     artist = _first_or(tags, "artist", "_unknown")
+
+    # [OP-6] Prepend [year] to filename for chronological sorting
+    years = tags.get("year", [])
+    if years and not stem.startswith(f"[{years[0]}]"):
+        stem = f"[{years[0]}] {stem}"
+
     return PurePosixPath("comedy", artist, f"{stem}{ext}")
 
 

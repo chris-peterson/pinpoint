@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS files (
     favorite INTEGER NOT NULL DEFAULT 0,
     stack_id INTEGER REFERENCES stacks(id),
     analysis_status TEXT,
-    skipped_at TEXT
+    skipped_at TEXT,
+    last_indexed_at TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_files_content_hash ON files(content_hash);

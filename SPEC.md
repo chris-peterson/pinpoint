@@ -42,16 +42,78 @@ Currently supports images, video, and audio. Designed to extend to any file type
 ### File Lifecycle
 
 ```mermaid
+---
+config:
+  look: handDrawn
+---
 flowchart LR
     A[Input folder] --> B[Discovered]
-    B --> C[Pending\nqueue]
-    C -->|Accept| D[Managed\noutput tree]
-    C -->|Reject| E[Removed from queue\noriginal untouched]
-    C -->|Skip| C
+    B --> C[Pending]
+    C -->|Accept| D[Managed]
+    C -->|Reject| A
+    C -->|Skip| E[Deferred]
+    E --> C
 ```
 
 - **[CM-3]** **Pending**: file is known to the system, thumbnail generated (for queue and library previews; video thumbnails use an early frame), AI analysis queued. Original file stays where it is.
-- **[CM-4]** **Managed**: file has been accepted and physically moved to the output tree. The system owns this file.
+- **[CM-4]** **Managed**: file has been accepted, tags are written into the file's native metadata, and the file is physically moved to the output tree. The system owns this file.
+- **[CM-5]** **Files are the source of truth.** Tags are persisted in each file's native metadata format (EXIF/IPTC/XMP for images, ID3 for MP3, Vorbis comments for FLAC, etc.). The database is a cache — fully rebuildable by scanning managed files and reading their embedded tags. See §12.
+
+### Discovery to managed — detailed flow
+
+```mermaid
+---
+config:
+  look: handDrawn
+---
+sequenceDiagram
+    participant FS as Input Folder
+    participant D as Discovery
+    participant DB as Database
+    participant AI as AI Analysis
+    participant Q as Queue UI
+    participant P as Path Engine
+    participant O as Output Tree
+
+    FS->>D: New/changed file detected
+    D->>D: Hash file (SHA-256)
+    D->>DB: Check for duplicate hash
+    alt Duplicate found
+        D-->>DB: Skip (don't enter queue)
+    else New file
+        D->>DB: Insert file (status: pending)
+        D->>DB: Apply default root from input config
+    end
+
+    par AI analysis (background)
+        DB->>AI: Pending file queued
+        AI->>AI: Extract embedded metadata
+        AI->>AI: Run analysis pipeline (faces, vision, lookup)
+        AI->>DB: Store suggestions with confidence scores
+    end
+
+    Q->>DB: Fetch next pending file
+    DB-->>Q: File + suggestions + defaults
+    Q->>Q: User reviews, edits tags
+    Q->>P: Compute path preview (live)
+    P-->>Q: Deterministic output path
+
+    alt Accept
+        Q->>DB: Save final tags
+        Q->>P: Derive output path from tags
+        P-->>Q: Final path
+        Q->>O: Move file to output path
+        Q->>DB: Update status → managed, set managed_path
+        Q->>DB: Log accept action
+    else Reject
+        Q->>DB: Remove from queue
+        Q->>DB: Log reject action
+        Note over FS: Original file untouched
+    else Skip
+        Q->>DB: Mark skipped
+        Note over Q: File stays in queue, shown later
+    end
+```
 
 ---
 
@@ -65,26 +127,11 @@ All tags follow a `type:value` structure. Some types support nesting via `:`.
 
 Determines the first directory segment and which other tags are path-relevant. Inherited from the input folder config, overridable per-file during review.
 
-Values: `memories`, `music`, `books`, `podcasts`, `movies`, `tv`, `comedy`
+Values: `memory`, `music`, `book`, `podcast`, `movie`, `tv`, `comedy`
 
-#### `class:` — File type
+#### `date:` — Temporal metadata
 
-Describes the format. Auto-assigned from file extension. Does not affect output path. Used for filtering and analysis pipeline selection. Supports nesting.
-
-```
-class:image
-class:image:screenshot
-class:video
-class:video:timelapse
-class:audio
-class:audio:lossless
-```
-
-#### `name:` — Filename
-
-Replaces the original filename in the output path (extension preserved). Used across all roots.
-
-If two files share the same `name:` within the same directory scope, they auto-stack and get numeric suffixes (`-1`, `-2`, etc.).
+Every root has a `date` tag (YYYY-MM-DD). Derived from the best available source: embedded media metadata (EXIF, QuickTime, ID3) over filesystem dates. If no date can be determined, use the discovery date.
 
 #### `favorite`
 
@@ -101,39 +148,54 @@ needs-editing
 live-recording
 ```
 
+### Derived attributes (not tags)
+
+These are computed from file properties and never stored as tags or written to file metadata:
+
+- **`class`** — file type (image, video, audio, document). Derived from file extension. Used for filtering, preview rendering, and AI pipeline selection.
+- **`month`** — `YYYY-MM`, derived from `date`. Used in `memory` path formula.
+- **`year`** — `YYYY`, derived from `date`. Used in `music`, `movie`, and `comedy` path formulas.
+
 ### Root-specific tag types
 
-Each root has its own set of meaningful tags. A tag type only appears in roots where it makes sense.
+Each root defines which tags are path-relevant. The schema below shows every root's tags and output path template (see §3 for full rules).
 
 ```mermaid
+---
+config:
+  look: handDrawn
+---
 graph TD
-    subgraph memories
-        event["event:"]
+    subgraph memory
+        event["event:*"]
         person["person:"]
-        name_m["name:"]
+        name_m["name:?"]
     end
     subgraph music
         artist_mu["artist:"]
-        album["album:"]
+        album["album:?"]
+        track["track:"]
         name_mu["name:"]
     end
-    subgraph books
-        author["author:"]
-        title["title:"]
-        name_b["name:"]
-    end
-    subgraph podcasts
-        show_p["show:"]
-        name_p["name:"]
+    subgraph movie
+        series_mv["series:*"]
+        name_mv["name:"]
     end
     subgraph tv
         show_t["show:"]
         season["season:"]
+        episode_t["episode:"]
         name_t["name:"]
     end
-    subgraph movies
-        series["series:"]
-        name_mv["name:"]
+    subgraph podcast
+        show_p["show:"]
+        episode_p["episode:"]
+        name_p["name:"]
+    end
+    subgraph book
+        author["author:"]
+        series_b["series:*"]
+        name_b["name:"]
     end
     subgraph comedy
         artist_c["artist:"]
@@ -141,24 +203,30 @@ graph TD
     end
 ```
 
-#### `event:` — Memories only
+#### `name:` — Filename (all roots)
+
+Replaces the original filename in the output path (extension preserved). When absent, the original filename is kept.
+
+If two files share the same `name:` within the same directory scope, they auto-stack and get numeric suffixes "\-1", "\-2", which corresponds to the z-order in the stack. When a stack dissolves to one file, the suffix is removed.
+
+#### `event:` — Memory only
 
 The occasion or context. Supports nesting via `:` — each segment becomes a directory.
 
 ```
-event:hawaii-vacation
-event:hawaii-vacation:snorkeling
-event:birthday-party:cake-cutting
+event:Hawaii Vacation
+event:Hawaii Vacation:Snorkeling
+event:Birthday Party:Cake Cutting
 ```
 
-#### `person:` — Memories only
+#### `person:` — Memory only
 
-Who is in the photo or video. Maps to face recognition embeddings. A file can have multiple `person:` tags.
+Who is in the photo or video. Maps to face recognition embeddings. A file can have multiple `person:` tags. Not path-relevant.
 
 ```
-person:eva
-person:max
-person:grandma-rose
+person:Eva
+person:Max
+person:Grandma Rose
 ```
 
 #### `artist:` — Music and Comedy
@@ -166,64 +234,73 @@ person:grandma-rose
 The performing artist or band.
 
 ```
-artist:pink-floyd
-artist:john-mulaney
-```
-
-#### `author:` — Books only
-
-The book's author.
-
-```
-author:tolkien
-author:ursula-k-le-guin
+artist:Pink Floyd
+artist:John Mulaney
 ```
 
 #### `album:` — Music only
 
-The album name. **Prefixed with release year in brackets** for chronological sorting when browsing an artist's discography.
+The album name. The `[year]` prefix in the output path is derived from the `year` tag — users enter the album name without a year.
 
 ```
-album:[1973] dark-side-of-the-moon
-album:[1975] wish-you-were-here
-album:[1979] the-wall
+album:Dark Side of the Moon
+album:Wish You Were Here
+album:The Wall
 ```
 
-#### `title:` — Books only
+#### `track:` — Music only
 
-The book title. Becomes a directory under the author.
+Track number, zero-padded (minimum 2 digits). Extracted from embedded metadata. Becomes part of the output filename.
 
 ```
-title:the-hobbit
-title:the-lord-of-the-rings
+track:01
+track:12
 ```
 
-#### `show:` — TV and Podcasts
+#### `author:` — Book only
+
+The book's author.
+
+```
+author:Tolkien
+author:Ursula K Le Guin
+```
+
+#### `series:` — Movie and Book
+
+Groups related works. Supports nesting. Optional — standalone works sit flat without a series directory.
+
+```
+series:Indiana Jones
+series:Lord of the Rings
+series:Harry Potter:Hogwarts Library
+```
+
+#### `show:` — TV and Podcast
 
 The series or show name. Becomes a directory.
 
 ```
-show:the-office
-show:hardcore-history
+show:The Office
+show:Hardcore History
 ```
 
 #### `season:` — TV only
 
-Season identifier. Becomes a directory under the show.
+Season number, zero-padded. Becomes a directory under the show as `Season ##`.
 
 ```
-season:3
-season:s02
+season:01
+season:03
 ```
 
-#### `series:` — Movies only
+#### `episode:` — TV and Podcast
 
-Groups related films (franchise, trilogy, etc.). Becomes a directory.
+Episode number, zero-padded. Becomes part of the output filename.
 
 ```
-series:indiana-jones
-series:lord-of-the-rings
-series:marvel-cinematic-universe
+episode:01
+episode:05
 ```
 
 ### Tag dictionary
@@ -233,63 +310,66 @@ The system maintains a registry of all known tags.
 - New tags are auto-registered on first use.
 - Powers autocomplete in the queue UI.
 - Tracks parent-child hierarchy for nested tags.
-- Filtering by a parent includes all children (e.g. `event:hawaii-vacation` matches `:snorkeling` too).
+- Filtering by a parent includes all children (e.g. `event:Hawaii Vacation` matches `:Snorkeling` too).
 - Browsable as a tree view grouped by type.
 
 ---
 
 ## 3. Output Path Structure
 
-**[OP-1]** Each root has a fixed path formula. The path is deterministically derived from tags.
+- **[OP-1]** Each root has a fixed path formula. The path is deterministically derived from tags. Path templates use the syntax described in §13.
 
 ```mermaid
+---
+config:
+  look: handDrawn
+---
 flowchart TD
-    root{root tag} -->|memories| mem["memories/YYYY-MM/event/name"]
-    root -->|music| mus["music/artist/album/name"]
-    root -->|books| bk["books/author/title/name"]
-    root -->|podcasts| pod["podcasts/show/name"]
-    root -->|tv| tv["tv/show/season/name"]
-    root -->|movies| mov["movies/series/name"]
-    root -->|comedy| com["comedy/artist/name"]
+    root{root tag} -->|memory| mem["memories/{month}/{event*}/{name?}"]
+    root -->|music| mus["music/{artist}/[{year}] {album?}/{track} - {name}"]
+    root -->|movie| mov["movies/{series*}/{name} [{year}]"]
+    root -->|tv| tv["tv/{show}/Season {season}/{episode} - {name}"]
+    root -->|podcast| pod["podcast/{show}/{episode} - {name}"]
+    root -->|book| bk["books/{author}/{series*}/{name}"]
+    root -->|comedy| com["comedy/{artist}/[{year}] {name}"]
 ```
 
-### `root:memories`
+### `root:memory`
 
-Photos and home video, colocated. Organized by date.
+Photos and home video, colocated. Organized by date and event.
 
 ```
-output/memories/<YYYY-MM>/<event:segments>/<name><ext>
+memories/{tag:month}/{tag:event*}/{tag:name?}<ext>
 ```
 
 | Tags | Output path |
 |---|---|
 | (none) | `memories/2025-01/IMG_4521.jpg` |
-| `event:hawaii-vacation` | `memories/2025-01/hawaii-vacation/IMG_4521.jpg` |
-| `event:hawaii-vacation:snorkeling` | `memories/2025-01/hawaii-vacation/snorkeling/IMG_4521.jpg` |
-| `name:sunset-over-ocean` | `memories/2025-01/sunset-over-ocean.jpg` |
-| `event:hawaii-vacation:snorkeling` + `name:sunset-over-ocean` | `memories/2025-01/hawaii-vacation/snorkeling/sunset-over-ocean.jpg` |
+| `event:Hawaii Vacation` | `memories/2025-01/Hawaii Vacation/IMG_4521.jpg` |
+| `event:Hawaii Vacation:Snorkeling` | `memories/2025-01/Hawaii Vacation/Snorkeling/IMG_4521.jpg` |
+| `name:Sunset Over Ocean` | `memories/2025-01/Sunset Over Ocean.jpg` |
+| `event:Hawaii Vacation:Snorkeling`, `name:Sunset Over Ocean` | `memories/2025-01/Hawaii Vacation/Snorkeling/Sunset Over Ocean.jpg` |
 
-**[OP-2]** `YYYY-MM` is determined from the best available date source: prefer embedded media metadata (e.g., EXIF, QuickTime) over filesystem dates. If no date can be determined, use the discovery date. Images and videos from the same event sit side by side.
+- **[OP-2]** `month` (YYYY-MM) is derived from `date`, which is determined from the best available source: embedded media metadata (EXIF, QuickTime) over filesystem dates. If no date can be determined, use the discovery date. Images and videos from the same event sit side by side.
 
 ### `root:music`
 
 Songs. Organized by artist. Albums include release year for chronological browsing.
 
 ```
-output/music/<artist>/<album>/<track> <name><ext>
+music/{tag:artist}/[{tag:year}] {tag:album?}/{tag:track} - {tag:name}<ext>
 ```
 
-**[OP-3]** Output filenames for music MUST include the track number, zero-padded (minimum 2 digits) for ordinal sorting. The track number is extracted from embedded metadata. When no track number is available, the filename is the name alone.
-
-**[OP-4]** For Various Artists compilations (albumartist = "Various Artists"), the artist is "Various Artists" and the original filename is preserved as-is (it typically encodes `## - Artist - Track` which is more informative than just the title).
+- **[OP-3]** `track` is zero-padded (minimum 2 digits) for ordinal sorting. Extracted from embedded metadata. When no track number is available, the filename is the name alone (no "\-" separator).
+- **[OP-4]** For Various Artists compilations (albumartist = "Various Artists"), the artist is "Various Artists" and the original filename is preserved as-is (it typically encodes `## - Artist - Track` which is more informative than just the title).
 
 | Tags | Output path |
 |---|---|
-| `artist:Pink Floyd`, `album:Dark Side of the Moon`, `year:1973`, `track:1`, `name:Time` | `music/Pink Floyd/[1973] Dark Side of the Moon/01 Time.flac` |
+| `artist:Pink Floyd`, `album:Dark Side of the Moon`, `year:1973`, `track:01`, `name:Time` | `music/Pink Floyd/[1973] Dark Side of the Moon/01 - Time.flac` |
 | `artist:Pink Floyd`, `name:Another Brick` | `music/Pink Floyd/Another Brick.mp3` |
-| `artist:Various Artists`, `album:8 Mile Soundtrack`, `year:2002`, `name:15 - Gang Starr - Battle` | `music/Various Artists/[2002] 8 Mile Soundtrack/15 - Gang Starr - Battle.mp3` |
+| `artist:Various Artists`, `album:8 Mile Soundtrack`, `year:2002` | `music/Various Artists/[2002] 8 Mile Soundtrack/15 - Gang Starr - Battle.mp3` *(original filename)* |
 | `name:Mystery Track` | `music/_unknown/Mystery Track.mp3` |
-| (none) | `music/_unknown/track-01.mp3` |
+| (none) | `music/_unknown/track-01.mp3` *(original filename)* |
 
 Browsing `music/Pink Floyd/` in Finder gives you:
 ```
@@ -299,101 +379,102 @@ Browsing `music/Pink Floyd/` in Finder gives you:
 [1979] The Wall/
 ```
 
-### `root:books`
+### `root:movie`
 
-Audiobooks. Organized by author.
-
-```
-output/books/<author>/<title>/<n><ext>
-```
-
-| Tags | Output path |
-|---|---|
-| `author:tolkien`, `title:the-hobbit`, `name:chapter-1` | `books/tolkien/the-hobbit/chapter-1.m4a` |
-| `author:tolkien`, `title:the-hobbit` | `books/tolkien/the-hobbit/the-hobbit.m4a` *(original filename)* |
-| `author:tolkien` | `books/tolkien/the-hobbit.m4a` *(original filename)* |
-
-### `root:podcasts`
-
-Podcast episodes. Organized by show.
+Feature films. Optionally grouped by series/franchise. Year appended for disambiguation.
 
 ```
-output/podcasts/<show>/<n><ext>
+movies/{tag:series*}/{tag:name} [{tag:year}]<ext>
 ```
 
 | Tags | Output path |
 |---|---|
-| `show:hardcore-history`, `name:ep-66-supernova-in-the-east` | `podcasts/hardcore-history/ep-66-supernova-in-the-east.mp3` |
-| `show:hardcore-history` | `podcasts/hardcore-history/episode.mp3` *(original filename)* |
-| (none) | `podcasts/_unknown/episode.mp3` |
+| `name:The Dark Knight`, `year:2008` | `movies/The Dark Knight [2008].mkv` |
+| `series:Indiana Jones`, `name:Raiders of the Lost Ark`, `year:1981` | `movies/Indiana Jones/Raiders of the Lost Ark [1981].mkv` |
+| `series:Lord of the Rings`, `name:The Fellowship of the Ring`, `year:2001` | `movies/Lord of the Rings/The Fellowship of the Ring [2001].mkv` |
+| (none) | `movies/movie.mkv` *(original filename)* |
+
+`series:` is optional — standalone films sit flat in `movies/`. `series:` supports nesting for sub-franchises. TMDb lookups suggest `name`, `year`, and `series` from collection metadata.
 
 ### `root:tv`
 
 TV series episodes. Organized by show and season.
 
 ```
-output/tv/<show>/<season>/<n><ext>
+tv/{tag:show}/Season {tag:season}/{tag:episode} - {tag:name}<ext>
 ```
 
 | Tags | Output path |
 |---|---|
-| `show:the-office`, `season:3`, `name:the-merger` | `tv/the-office/3/the-merger.mkv` |
-| `show:the-office`, `season:3` | `tv/the-office/3/episode.mkv` *(original filename)* |
-| `show:the-office` | `tv/the-office/episode.mkv` *(original filename)* |
+| `show:The Office`, `season:03`, `episode:05`, `name:The Merger` | `tv/The Office/Season 03/05 - The Merger.mkv` |
+| `show:The Office`, `season:03`, `episode:05` | `tv/The Office/Season 03/05.mkv` *(original filename)* |
+| `show:The Office` | `tv/The Office/episode.mkv` *(original filename)* |
 
-### `root:movies`
+### `root:podcast`
 
-Feature films. Optionally grouped by series/franchise.
+Podcast episodes. Organized by show.
 
 ```
-output/movies/<series>/<n><ext>
+podcast/{tag:show}/{tag:episode} - {tag:name}<ext>
 ```
 
 | Tags | Output path |
 |---|---|
-| `name:the-dark-knight [2008]` | `movies/the-dark-knight [2008].mkv` |
-| `series:indiana-jones`, `name:raiders-of-the-lost-ark [1981]` | `movies/indiana-jones/raiders-of-the-lost-ark [1981].mkv` |
-| `series:lord-of-the-rings`, `name:the-fellowship-of-the-ring [2001]` | `movies/lord-of-the-rings/the-fellowship-of-the-ring [2001].mkv` |
-| (none) | `movies/movie.mkv` *(original filename)* |
+| `show:Hardcore History`, `episode:66`, `name:Supernova in the East` | `podcast/Hardcore History/66 - Supernova in the East.mp3` |
+| `show:Hardcore History` | `podcast/Hardcore History/episode.mp3` *(original filename)* |
+| (none) | `podcast/_unknown/episode.mp3` *(original filename)* |
 
-Year is part of the `name:` value, not a separate tag. `series:` is optional — standalone films sit flat in `movies/`. TMDb lookups auto-include the year in the suggestion, and can suggest `series:` from collection metadata.
+### `root:book`
+
+Audiobooks. Organized by author, optionally grouped by series.
+
+```
+books/{tag:author}/{tag:series*}/{tag:name}<ext>
+```
+
+| Tags | Output path |
+|---|---|
+| `author:Tolkien`, `name:The Hobbit` | `books/Tolkien/The Hobbit.m4a` |
+| `author:Tolkien`, `series:Middle Earth`, `name:The Hobbit` | `books/Tolkien/Middle Earth/The Hobbit.m4a` |
+| `author:Ursula K Le Guin`, `series:Earthsea`, `name:A Wizard of Earthsea` | `books/Ursula K Le Guin/Earthsea/A Wizard of Earthsea.m4a` |
+| (none) | `books/_unknown/book.m4a` *(original filename)* |
 
 ### `root:comedy`
 
-Standup specials and sketches. Organized by performer.
+Standup specials and sketches. Organized by performer. Year prepended for chronological sorting.
 
 ```
-output/comedy/<artist>/<n><ext>
+comedy/{tag:artist}/[{tag:year}] {tag:name}<ext>
 ```
 
 | Tags | Output path |
 |---|---|
-| `artist:john-mulaney`, `name:kid-gorgeous [2018]` | `comedy/john-mulaney/kid-gorgeous [2018].mp4` |
-| `artist:john-mulaney` | `comedy/john-mulaney/special.mp4` *(original filename)* |
+| `artist:John Mulaney`, `name:Kid Gorgeous`, `year:2018` | `comedy/John Mulaney/[2018] Kid Gorgeous.mp4` |
+| `artist:John Mulaney` | `comedy/John Mulaney/special.mp4` *(original filename)* |
 
 ### Tag value casing
 
-**[OP-5]** Tag values use **Title Case** with spaces as word separators. Minor words (a, an, the, and, or, of, in, on, etc.) stay lowercase unless first or last.
+- **[OP-5]** Tag values use **Title Case** with spaces as word separators. Minor words (a, an, the, and, or, of, in, on, etc.) stay lowercase unless first or last.
 
 ```
 artist:Pink Floyd
 album:Dark Side of the Moon
-name:Time
+name:The Dark Knight
 event:Hawaii Vacation:Snorkeling
 author:Ursula K Le Guin
 ```
 
 Defaults derived from embedded metadata or folder structure are automatically converted to this convention.
 
-### Year is metadata, not part of album name
+### Year is metadata, not part of name/album
 
-**[OP-6]** The `[year]` prefix on album directories (e.g., `[1973] Dark Side of the Moon`) is derived automatically from the `year` tag or embedded metadata. Users enter the album name without a year — the year field is separate. This keeps the album name clean in the UI while still producing chronologically sortable output paths.
+- **[OP-6]** The `[year]` in output paths (e.g., `[1973] Dark Side of the Moon`, `The Dark Knight [2008]`) is derived automatically from the `year` tag. Users enter the name/album without a year — the year is a separate tag. This keeps names clean in the UI while producing chronologically sortable output paths.
 
 ### General rules
 
 - **[OP-7]** When `name:` is set, it replaces the filename. When absent, the original filename is kept.
-- **[OP-8]** Missing path segments use `_unknown` as a placeholder.
-- **[OP-9]** Duplicate names within the same directory scope auto-stack with numeric suffixes (`-1`, `-2`).
+- **[OP-8]** Missing required path segments use `_unknown` as a placeholder.
+- **[OP-9]** Duplicate filenames within the same directory scope auto-stack with numeric suffixes ("\-1", "\-2", etc.).
 - **[OP-10]** When a stack dissolves to one file, the suffix is removed.
 - **[OP-11]** Changing any path-affecting tag on a managed file triggers relocation. Empty parent directories are cleaned up.
 
@@ -401,7 +482,7 @@ Defaults derived from embedded metadata or folder structure are automatically co
 
 ## 4. Migration Queue
 
-The queue is the primary workflow and the default landing page.
+The queue is the primary workflow for ingesting new files. Accessible via sidebar navigation.
 
 ### Behavior
 
@@ -434,15 +515,15 @@ Fields shown depend on the root:
 
 | Root | Fields shown |
 |---|---|
-| `memories` | Event, Name, Person, Tags |
-| `music` | Artist, Album (with year), Name (track), Tags |
-| `books` | Author, Title, Name (chapter), Tags |
-| `podcasts` | Show, Name (episode), Tags |
-| `tv` | Show, Season, Name (episode), Tags |
-| `movies` | Series (optional), Name (title [year]), Tags |
-| `comedy` | Artist (performer), Name (title), Tags |
+| `memory` | Event, Name, Person, Tags |
+| `music` | Artist, Album, Year, Track, Name, Tags |
+| `movie` | Series (optional), Title, Year, Tags |
+| `tv` | Show, Season, Episode, Name, Tags |
+| `podcast` | Show, Episode, Name, Tags |
+| `book` | Author, Series (optional), Title, Tags |
+| `comedy` | Artist, Title, Year, Tags |
 
-Each field has contextual labels and placeholder text appropriate to the root. The Album field for `root:music` shows placeholder "[1973] dark-side-of-the-moon" to prompt the year prefix convention. When audio API results include a release year, the suggestion pre-fills the `[year]` prefix automatically.
+Each field has contextual labels and placeholder text appropriate to the root. Year fields are auto-populated from embedded metadata when available.
 
 ### Completeness nudge
 
@@ -450,12 +531,12 @@ Which tags are "expected" depends on the root:
 
 | Root | Expected |
 |---|---|
-| `memories` | `event:` + `name:` |
+| `memory` | `event:` + `name:` |
 | `music` | `artist:` + `album:` + `name:` |
-| `books` | `author:` + `title:` + `name:` |
-| `podcasts` | `show:` + `name:` |
-| `tv` | `show:` + `season:` + `name:` |
-| `movies` | `name:` |
+| `movie` | `name:` |
+| `tv` | `show:` + `season:` + `episode:` + `name:` |
+| `podcast` | `show:` + `episode:` + `name:` |
+| `book` | `author:` + `name:` |
 | `comedy` | `artist:` + `name:` |
 
 - Missing expected tags show an orange warning.
@@ -493,6 +574,10 @@ Which tags are "expected" depends on the root:
 All analysis runs locally. No cloud APIs except free/open music metadata lookup.
 
 ```mermaid
+---
+config:
+  look: handDrawn
+---
 flowchart TD
     D[File discovered] --> CL{class?}
     CL -->|image/video| R{root?}
@@ -503,10 +588,10 @@ flowchart TD
     FD --> S[Suggestions table]
     VL --> S
     ML --> S
-    ME --> API[MusicBrainz / AcoustID\nlookup]
+    ME --> API[MusicBrainz / AcoustID lookup]
     ME --> S
     API --> S
-    S --> Q[Queue UI shows\nsuggestions to user]
+    S --> Q[Queue UI shows suggestions]
 ```
 
 ### Background worker
@@ -545,16 +630,16 @@ flowchart TD
 - **AcoustID**: audio fingerprinting to identify unknown tracks.
 - Results mapped to tag suggestions based on the file's root:
 
-| Source | `root:music` | `root:books` | `root:podcasts` |
+| Source | `root:music` | `root:book` | `root:podcast` |
 |---|---|---|---|
 | Artist/Author | `artist:` | `author:` | — |
-| Album/Title | `album:[year] name` | `title:` | `show:` |
-| Track/Chapter | `name:` | `name:` | `name:` |
-| Genre | — | — | — |
+| Album/Title | `album:` | `name:` | `show:` |
+| Year | `year:` | — | — |
+| Track/Chapter | `track:` + `name:` | `name:` | `episode:` + `name:` |
 
 ### Movie/TV analysis
 
-For files in `root:movies`, `root:tv`, and `root:comedy` — attempt to identify the content from the original filename (which often contains the title, year, season/episode numbers, or release group tags).
+For files in `root:movie`, `root:tv`, and `root:comedy` — attempt to identify the content from the original filename (which often contains the title, year, season/episode numbers, or release group tags).
 
 #### Filename parsing
 
@@ -566,12 +651,13 @@ For files in `root:movies`, `root:tv`, and `root:comedy` — attempt to identify
 - TMDb TV endpoints: lookup by show+season+episode for episode titles.
 - Results mapped to tag suggestions:
 
-| Source | `root:movies` | `root:tv` | `root:comedy` |
+| Source | `root:movie` | `root:tv` | `root:comedy` |
 |---|---|---|---|
-| Title + Year | `name:title [year]` | `show:` | `name:title [year]` |
+| Title | `name:` | `show:` | `name:` |
+| Year | `year:` | — | `year:` |
 | Collection/Franchise | `series:` | — | — |
 | Episode title | — | `name:` | — |
-| Season/Episode | — | `season:` | — |
+| Season/Episode | — | `season:` + `episode:` | — |
 | Performer/Director | — | — | `artist:` |
 
 ### Suggestions
@@ -585,24 +671,42 @@ For files in `root:movies`, `root:tv`, and `root:comedy` — attempt to identify
 
 ## 7. Search and Browsing
 
-### Library view
+The home page. The default landing experience is searching and browsing the managed library.
 
-- Shows managed files as a **tree view** mirroring the output directory structure.
-- Directories are expandable nodes. Files are leaf nodes with contextual icons:
-  - Audio files: play icon (&#9654;) — click to play inline.
+### Search
+
+- **[LB-1]** Full-text search bar at the top of the home page. Searches across filenames, tag values, metadata, and AI descriptions.
+- **[LB-2]** Results displayed as a grid of **folders** (see below) and individual files.
+- **[LB-3]** Filters narrow results:
+  - Root (memories, music, tv, etc.).
+  - Class (image, video, audio).
+  - Date range.
+  - Person / Artist / Author (context-appropriate label per root).
+  - Tags — multiple = AND. Parent tags include children.
+
+### Folders
+
+A **folder** is a virtual grouping of managed files, derived from the primary grouping segment of each root's path formula. Each folder has a **name** and a **hero image**.
+
+- **[LB-4]** Folders are the primary browsing unit. The home page shows folders as cards (hero image + name).
+- **[LB-5]** The hero image is the first image file in the folder (by date), or the stack cover if one exists. Falls back to a file-type icon when no image is available.
+
+| Root | Folder level | Example folder name |
+|------|-------------|-------------------|
+| memory | `event:` | "Hawaii Vacation" |
+| music | `artist:` + `album:` | "Pink Floyd — Dark Side of the Moon" |
+| movie | `series:` | "Indiana Jones" |
+| tv | `show:` + `season:` | "The Office — Season 3" |
+| podcast | `show:` | "Hardcore History" |
+| book | `author:` + `series:` | "Tolkien — Middle Earth" |
+| comedy | `artist:` | "John Mulaney" |
+
+- **[LB-6]** Files without a grouping tag (e.g., a movie with no `series:`) appear as standalone items alongside folders.
+- **[LB-7]** Clicking a folder opens it to show its contents — individual files with contextual icons:
+  - Audio: play icon (&#9654;) — click to play inline.
   - Images: image icon — click to open/preview.
   - Video: film icon — click to open/preview.
-- Favorites marked with a star indicator.
-- Favorites sort first within each directory.
-
-### Filters
-
-- Date range.
-- Root.
-- Class.
-- Person / Artist / Author (context-appropriate for root).
-- Tags — multiple = AND. Parent tags include children.
-- Full-text search across filenames, tags, metadata, AI descriptions.
+- Favorites marked with a star indicator. Favorites sort first.
 
 ### On This Day
 
@@ -638,8 +742,8 @@ For files in `root:movies`, `root:tv`, and `root:comedy` — attempt to identify
 
 ### Core entities
 
-- **files** — every known file. Tracks: source location, managed location, lifecycle status (pending/managed/missing/drifted), root, class, content hash, perceptual hash, temporal metadata (creation, discovery, managed dates), favorite flag, stack membership, analysis state.
-- **tags** — tag dictionary. Tracks: full name (e.g. `event:hawaii-vacation:snorkeling`), type (root/class/event/name/person/artist/author/album/title/show/season/series/general), whether built-in.
+- **files** — every known file. Tracks: source location, managed location, lifecycle status (pending/managed/missing/drifted), root, class, content hash, perceptual hash, temporal metadata (creation, discovery, managed dates), favorite flag, stack membership, analysis state, `last_indexed_at` (timestamp of last audit — validates input tags and output filename consistency).
+- **tags** — tag dictionary. Tracks: full name (e.g. `event:hawaii-vacation:snorkeling`), type (root/event/name/person/artist/author/album/title/show/season/series/general), whether built-in.
 - **file_tags** — associates files with tags. Tracks: region (face bounding box if applicable), when applied.
 - **suggestions** — AI analysis results. Tracks: target file, kind, suggested value, confidence, region, status (pending/accepted/dismissed).
 - **stacks** — groups of similar or colliding files. Tracks: cover file, member ordering.
@@ -704,11 +808,64 @@ The output directory is a regular folder. Users may interact with it directly vi
 - On startup (and optionally on a schedule), scan all managed files and verify they exist at their expected paths.
 - Surface any missing or drifted files.
 
-## 12. Filesystem Metadata (macOS)
+## 12. Tag Persistence
 
-- When available, write tags to extended attributes on managed files.
-- On discovery, import existing tags from extended attributes and macOS Finder tags.
-- Optional — works without on other platforms.
+### Principle: files are the source of truth
+
+Managed files must be self-describing. Pinpoint writes tags into each file using the most native metadata format available for that file type. The database is a cache — it must be fully rebuildable by scanning the output directory and reading embedded tags from managed files.
+
+### Native formats by file type
+
+| File type | Write tags to | Read tags from |
+|---|---|---|
+| JPEG | EXIF/IPTC/XMP (e.g. `dc:subject`, IPTC keywords) | Same |
+| PNG | XMP sidecar or tEXt chunks | Same |
+| TIFF | EXIF/IPTC/XMP | Same |
+| MP4/MOV | XMP embedded or QuickTime user data | Same |
+| MP3 | ID3v2 frames (e.g. `TXXX` for custom tags) | ID3v1/v2 |
+| FLAC/OGG | Vorbis comments | Same |
+| M4A/AAC | MP4 atoms / iTunes-style tags | Same |
+| PDF | XMP metadata | Same |
+| Other | XDG extended attributes (`user.pinpoint.*`) | Same |
+
+### Tag storage — no custom metadata format
+
+Pinpoint never invents its own metadata format. Every tag is stored using an existing standard or derived from the file itself.
+
+| Tag | Storage | Source |
+|---|---|---|
+| `date` | Native metadata | `DateTimeOriginal` (EXIF), `TDRC` / `DATE` (ID3/Vorbis) |
+| `event` | Native metadata | `Iptc4xmpExt:Event` |
+| `person` | Native metadata | `XMP-mwg-rs:RegionName` (face regions) |
+| `artist` | Native metadata | `TPE1` / `ARTIST` (ID3/Vorbis) |
+| `album` | Native metadata | `TALB` / `ALBUM` (ID3/Vorbis) |
+| `name` | Native metadata | `TIT2` / `TITLE` (ID3/Vorbis); also in output filename |
+| `track` | Native metadata | `TRCK` / `TRACKNUMBER` (ID3/Vorbis) |
+| `author` | Native metadata | `dc:creator` (XMP/PDF) |
+| `show`, `season`, `episode`, `series` | Output path | Derived from directory structure |
+| `root` | Extended attribute | `user.pinpoint.root` |
+| `favorite` | Extended attribute | `user.pinpoint.favorite` |
+| General tags | Extended attribute | `user.pinpoint.tag.*` |
+| `class` | Computed | Derived from file extension (not stored) |
+| `month`, `year` | Computed | Derived from `date` (not stored) |
+
+- **[TP-1]** Tags with native metadata fields are written to those fields directly. Pinpoint reads from and writes to native fields.
+- **[TP-2]** Tags that are format-agnostic (`root`, `favorite`, general tags) are stored as extended attributes.
+- **[TP-3]** Tags derivable from the output path or the file itself are never written — they are reconstructed on read.
+- **[TP-4]** On accept, native metadata and xattrs are written before the file is moved to the output tree.
+- **[TP-5]** On tag change (managed file), metadata is rewritten and the file is relocated if path-relevant tags changed.
+
+### Extended attributes
+
+- **[TP-6]** On macOS, additionally mirror tags to `com.apple.metadata:_kMDItemUserTags` so they appear as Finder tags.
+- **[TP-7]** On discovery, import existing Finder tags / xattrs as suggestions.
+- **[TP-8]** On Linux, uses the `user.*` xattr namespace. On macOS, uses both `user.pinpoint.*` and the Finder tag namespace.
+
+### Database rebuild
+
+- **[TP-9]** `pinpoint rebuild` scans the output directory, reads native metadata + xattrs + path structure from every managed file, and reconstructs the `files`, `tags`, and `file_tags` tables.
+- **[TP-10]** Action history is not recoverable (append-only log is database-only).
+- **[TP-11]** Rebuild cross-checks: a file's directory position should be consistent with its embedded tags. Inconsistencies are flagged as drifted.
 
 ---
 
@@ -719,17 +876,17 @@ Minimal. Inputs with their default root, and an output path.
 ```yaml
 inputs:
   - path: ~/Pictures
-    root: memories
+    root: memory
   - path: ~/DCIM
-    root: memories
+    root: memory
   - path: ~/Music
     root: music
   - path: ~/Audiobooks
-    root: books
+    root: book
   - path: ~/Downloads/podcasts
-    root: podcasts
+    root: podcast
   - path: ~/Movies
-    root: movies
+    root: movie
 
 output: ~/.pinpoint/files
 ```
@@ -739,6 +896,84 @@ Everything else has sensible defaults in code. Hot-reloads on file change.
 **Data directory**: Pinpoint stores system data under `~/.pinpoint/` by default (database, thumbnails, etc.). The managed output tree lives at the configured `output:` path within this directory.
 
 Config file location: `~/.pinpoint/config.yaml`. Overridable via `--config <path>` or `PINPOINT_CONFIG` environment variable.
+
+### Path template syntax
+
+Each root defines an `output_path` template that determines the directory structure. Templates use `{tag:name}` placeholders with modifiers:
+
+| Syntax | Meaning | Example |
+|--------|---------|---------|
+| `{tag:name}` | Required tag value | `{tag:artist}` → `Pink Floyd` |
+| `{tag:name?}` | Optional — omitted if tag is absent | `{tag:name?}` → `` (no segment) |
+| `{tag:name*}` | Nested — each `:` segment becomes a directory | `{tag:event*}` → `Hawaii Vacation/Snorkeling` |
+| `[{tag:year}]` | Literal brackets around the value | `[{tag:year}]` → `[1973]` |
+
+Literal text outside `{...}` is preserved as-is (e.g., `Season ` prefix, ` - ` separator). When an optional tag is absent, its surrounding literal context (separators, brackets) is also omitted.
+
+Complete root definitions:
+
+```yaml
+roots:
+  memory:
+    tags:
+    - date       # YYYY-MM-DD
+    - month      # date.format(YYYY-MM)
+    - person
+    - event      # optional and/or nested
+    - name       # optional
+    output_path: memories/{tag:month}/{tag:event*}/{tag:name?}
+
+  music:
+    tags:
+    - date       # typically release date, e.g. YYYY-MM-DD
+    - year       # date.format(YYYY)
+    - artist
+    - album      # optional
+    - track      # e.g. 01, 02, ...
+    - name
+    output_path: music/{tag:artist}/[{tag:year}] {tag:album?}/{tag:track} - {tag:name}
+
+  movie:
+    tags:
+    - date       # typically release date, e.g. YYYY-MM-DD
+    - year       # date.format(YYYY)
+    - series     # optional and/or nested
+    - name
+    output_path: movies/{tag:series*}/{tag:name} [{tag:year}]
+
+  tv:
+    tags:
+    - date
+    - show
+    - season     # e.g. 01, 02, ...
+    - episode    # e.g. 01, 02, ...
+    - name
+    output_path: tv/{tag:show}/Season {tag:season}/{tag:episode} - {tag:name}
+
+  podcast:
+    tags:
+    - date
+    - show
+    - episode    # e.g. 01, 02, ...
+    - name
+    output_path: podcast/{tag:show}/{tag:episode} - {tag:name}
+
+  book:
+    tags:
+    - date
+    - author
+    - series     # optional and/or nested
+    - name
+    output_path: books/{tag:author}/{tag:series*}/{tag:name}
+
+  comedy:
+    tags:
+    - date
+    - year       # date.format(YYYY)
+    - artist
+    - name
+    output_path: comedy/{tag:artist}/[{tag:year}] {tag:name}
+```
 
 ---
 

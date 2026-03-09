@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Pinpoint{% endblock %}
+
+{% block content %}
+<form action="/" method="get" role="search">
+    <input type="search" name="q" value="{{ q }}" placeholder="Search files, paths, tags..."
+           autofocus autocomplete="off">
+</form>
+
+{% if not q %}
+<div class="home-stats">
+    {% if pending_count > 0 %}
+    <a href="/queue" role="button" class="outline">
+        {{ pending_count }} files pending review
+    </a>
+    {% endif %}
+    {% if managed_count > 0 %}
+    <a href="/library" role="button" class="outline secondary">
+        {{ managed_count }} managed files
+    </a>
+    {% endif %}
+    {% if pending_count == 0 and managed_count == 0 %}
+    <article>
+        <p>No files yet. Configure inputs in <code>config.yaml</code> and start the server to discover files.</p>
+    </article>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if q %}
+<p class="search-meta">{{ results | length }} result{{ "s" if results | length != 1 }} for "{{ q }}"</p>
+
+{% if results %}
+<table class="search-results">
+    <thead>
+        <tr>
+            <th>File</th>
+            <th>Root</th>
+            <th>Type</th>
+            <th>Status</th>
+            <th>Tags</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for row in results %}
+        <tr>
+            <td>
+                {% set display_path = row.managed_path or row.source_path %}
+                {% if row.status == 'managed' %}
+                    <a href="/api/files/{{ row.id }}/content" target="_blank">
+                        {{ display_path | basename }}
+                    </a>
+                {% else %}
+                    {{ display_path | basename }}
+                {% endif %}
+                <br><small>{{ display_path }}</small>
+            </td>
+            <td><code>{{ row.root }}</code></td>
+            <td>{{ row.file_class }}</td>
+            <td>{{ row.status }}</td>
+            <td><small>{{ row.tag_list or '' }}</small></td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<article>
+    <p>No files match "{{ q }}".</p>
+</article>
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -32,6 +32,7 @@ class ActionVerb(enum.StrEnum):
     STACK_DISSOLVE = "stack_dissolve"
     SUGGESTION_ACCEPT = "suggestion_accept"
     SUGGESTION_DISMISS = "suggestion_dismiss"
+    TAG_WRITE = "tag_write"
 
 
 class SuggestionStatus(enum.StrEnum):
@@ -56,6 +57,7 @@ class File:
     favorite: bool
     stack_id: int | None
     analysis_status: str | None
+    last_indexed_at: datetime | None
 
     @classmethod
     def from_row(cls, row: dict) -> File:
@@ -74,6 +76,7 @@ class File:
             favorite=bool(row["favorite"]),
             stack_id=row["stack_id"],
             analysis_status=row["analysis_status"],
+            last_indexed_at=_parse_dt(row.get("last_indexed_at")),
         )
 
 
@@ -128,6 +131,23 @@ class Action:
             file_id=row["file_id"],
             detail=row["detail"],
         )
+
+
+# Root-specific tag fields — defines which fields appear in the tag editor
+# for each root and their display labels. Order matters (display order).
+# Derived fields (date, month, year) are not included — they come from metadata.
+ROOT_FIELDS: dict[str, list[tuple[str, str]]] = {
+    "memories": [("event", "Event"), ("person", "Person"), ("name", "Name")],
+    "music": [("artist", "Artist"), ("album", "Album"), ("track", "Track #"), ("name", "Track name")],
+    "books": [("author", "Author"), ("series", "Series"), ("name", "Title")],
+    "podcasts": [("show", "Show"), ("episode", "Episode #"), ("name", "Episode name")],
+    "tv": [("show", "Show"), ("season", "Season"), ("episode", "Episode #"), ("name", "Episode name")],
+    "movies": [("series", "Series"), ("name", "Title")],
+    "comedy": [("artist", "Performer"), ("name", "Title")],
+}
+
+# All known tag field IDs (union of all ROOT_FIELDS keys)
+ALL_TAG_FIELDS = tuple({field for fields in ROOT_FIELDS.values() for field, _ in fields})
 
 
 def _parse_dt(value: str | None) -> datetime | None:

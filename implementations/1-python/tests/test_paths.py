@@ -161,7 +161,7 @@ class TestBooks:
     def test_full_tags(self):
         result = derive_path(
             "books",
-            {"author": ["tolkien"], "title": ["the-hobbit"], "name": ["chapter-1"]},
+            {"author": ["tolkien"], "series": ["the-hobbit"], "name": ["chapter-1"]},
             "audio.m4a",
             None,
         )
@@ -215,48 +215,100 @@ class TestTV:
 
 
 class TestMovies:
-    def test_standalone(self):
+    def test_standalone_with_year(self):
         result = derive_path(
             "movies",
-            {"name": ["the-dark-knight [2008]"]},
+            {"name": ["The Dark Knight"], "year": ["2008"]},
             "movie.mkv",
             None,
         )
-        assert result == PurePosixPath("movies/the-dark-knight [2008].mkv")
+        assert result == PurePosixPath("movies/The Dark Knight [2008].mkv")
+
+    def test_standalone_no_year(self):
+        result = derive_path(
+            "movies",
+            {"name": ["The Dark Knight"]},
+            "movie.mkv",
+            None,
+        )
+        assert result == PurePosixPath("movies/The Dark Knight.mkv")
 
     def test_with_series(self):
         result = derive_path(
             "movies",
-            {"series": ["indiana-jones"], "name": ["raiders-of-the-lost-ark [1981]"]},
+            {"series": ["Indiana Jones"], "name": ["Raiders of the Lost Ark"], "year": ["1981"]},
             "movie.mkv",
             None,
         )
         assert result == PurePosixPath(
-            "movies/indiana-jones/raiders-of-the-lost-ark [1981].mkv"
+            "movies/Indiana Jones/Raiders of the Lost Ark [1981].mkv"
+        )
+
+    def test_nested_series(self):
+        """series: supports nesting via colon separator."""
+        result = derive_path(
+            "movies",
+            {"series": ["Marvel:Avengers"], "name": ["Endgame"], "year": ["2019"]},
+            "movie.mkv",
+            None,
+        )
+        assert result == PurePosixPath(
+            "movies/Marvel/Avengers/Endgame [2019].mkv"
         )
 
     def test_no_tags(self):
         result = derive_path("movies", {}, "movie.mkv", None)
         assert result == PurePosixPath("movies/movie.mkv")
 
+    def test_year_already_in_name(self):
+        """If name already ends with [year], don't double it."""
+        result = derive_path(
+            "movies",
+            {"name": ["The Dark Knight [2008]"], "year": ["2008"]},
+            "movie.mkv",
+            None,
+        )
+        assert result == PurePosixPath("movies/The Dark Knight [2008].mkv")
+
 
 class TestComedy:
     def test_full_tags(self):
         result = derive_path(
             "comedy",
-            {"artist": ["john-mulaney"], "name": ["kid-gorgeous [2018]"]},
+            {"artist": ["John Mulaney"], "name": ["Kid Gorgeous"], "year": ["2018"]},
             "special.mp4",
             None,
         )
         assert result == PurePosixPath(
-            "comedy/john-mulaney/kid-gorgeous [2018].mp4"
+            "comedy/John Mulaney/[2018] Kid Gorgeous.mp4"
         )
+
+    def test_no_year(self):
+        result = derive_path(
+            "comedy",
+            {"artist": ["John Mulaney"], "name": ["Kid Gorgeous"]},
+            "special.mp4",
+            None,
+        )
+        assert result == PurePosixPath("comedy/John Mulaney/Kid Gorgeous.mp4")
 
     def test_artist_only(self):
         result = derive_path(
             "comedy",
-            {"artist": ["john-mulaney"]},
+            {"artist": ["John Mulaney"]},
             "special.mp4",
             None,
         )
-        assert result == PurePosixPath("comedy/john-mulaney/special.mp4")
+        assert result == PurePosixPath("comedy/John Mulaney/special.mp4")
+
+    def test_year_already_in_name(self):
+        """If name already starts with [year], don't double it."""
+        result = derive_path(
+            "comedy",
+            {"artist": ["John Mulaney"], "name": ["[2018] Kid Gorgeous"], "year": ["2018"]},
+            "special.mp4",
+            None,
+        )
+        assert result == PurePosixPath(
+            "comedy/John Mulaney/[2018] Kid Gorgeous.mp4"
+        )

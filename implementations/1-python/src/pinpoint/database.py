@@ -36,8 +36,6 @@ async def _migrate(db: aiosqlite.Connection) -> None:
     """Apply incremental migrations to existing databases."""
     # Migration 1: actions.file_id needs ON DELETE SET NULL (was bare FK).
     # SQLite can't ALTER FK constraints, so recreate the table if needed.
-    cursor = await db.execute("PRAGMA table_info(actions)")
-    columns = await cursor.fetchall()
     # Check if we need to recreate by looking at the FK definition
     cursor = await db.execute("SELECT sql FROM sqlite_master WHERE name = 'actions' AND type = 'table'")
     row = await cursor.fetchone()

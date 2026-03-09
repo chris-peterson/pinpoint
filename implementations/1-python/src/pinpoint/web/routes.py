@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.templating import Jinja2Templates
 
 from pinpoint import database as db
-from pinpoint.defaults import defaults_from_source, defaults_from_source_split, extract_audio_metadata
-from pinpoint.models import File
+from pinpoint.defaults import defaults_from_source_split, extract_audio_metadata
+from pinpoint.models import File, ROOT_FIELDS
 from pinpoint.paths import derive_path
 
 router = APIRouter(tags=["web"])
@@ -19,8 +19,50 @@ templates = Jinja2Templates(directory=str(templates_dir))
 
 
 @router.get("/")
+async def home_page(request: Request, q: str = ""):
+    """Home page — search across all files."""
+    conn = request.app.state.db
+
+    # Stats for the home page
+    pending_row = await db.fetch_one(
+        conn, "SELECT COUNT(*) as count FROM files WHERE status = 'pending' AND skipped_at IS NULL"
+    )
+    managed_row = await db.fetch_one(
+        conn, "SELECT COUNT(*) as count FROM files WHERE status = 'managed'"
+    )
+    pending_count = pending_row["count"] if pending_row else 0
+    managed_count = managed_row["count"] if managed_row else 0
+
+    results = []
+    if q:
+        # Search managed files by path and tags
+        like_q = f"%{q}%"
+        results = await db.fetch_all(
+            conn,
+            """SELECT f.id, f.managed_path, f.source_path, f.root, f.file_class, f.status,
+                      GROUP_CONCAT(t.name, ', ') as tag_list
+               FROM files f
+               LEFT JOIN file_tags ft ON f.id = ft.file_id
+               LEFT JOIN tags t ON ft.tag_id = t.id
+               WHERE (f.managed_path LIKE ? OR f.source_path LIKE ? OR t.name LIKE ?)
+               GROUP BY f.id
+               ORDER BY f.managed_date DESC, f.discovery_date DESC
+               LIMIT 50""",
+            (like_q, like_q, like_q),
+        )
+
+    return templates.TemplateResponse("home.html", {
+        "request": request,
+        "q": q,
+        "results": results,
+        "pending_count": pending_count,
+        "managed_count": managed_count,
+    })
+
+
+@router.get("/queue")
 async def queue_page(request: Request, root: str = "", file_class: str = ""):
-    """Main queue page — the default landing page."""
+    """Queue page — review and tag pending files."""
     conn = request.app.state.db
 
     # Build filter clause
@@ -61,6 +103,8 @@ async def queue_page(request: Request, root: str = "", file_class: str = ""):
     tags_list = []
     preview_path = ""
     field_defaults: dict[str, str] = {}
+    filename_defaults: dict[str, str] = {}
+    metadata_defaults: dict[str, str] = {}
 
     if row:
         file_data = File.from_row(row)
@@ -154,7 +198,9 @@ async def queue_page(request: Request, root: str = "", file_class: str = ""):
         "filter_qs": filter_qs,
         "available_roots": root_rows,
         "available_classes": class_rows,
+        "pending_count": remaining,
         "discovery": request.app.state.discovery_status,
+        "root_fields": ROOT_FIELDS.get(file_data.root if file_data else "", []),
     })
 
 
@@ -169,6 +215,11 @@ async def library_page(request: Request):
            FROM files WHERE status = 'managed'
            ORDER BY managed_path ASC""",
     )
+
+    pending_row = await db.fetch_one(
+        conn, "SELECT COUNT(*) as count FROM files WHERE status = 'pending' AND skipped_at IS NULL"
+    )
+    pending_count = pending_row["count"] if pending_row else 0
 
     config = request.app.state.config_holder.config
     output_prefix = str(config.output)
@@ -200,4 +251,56 @@ async def library_page(request: Request):
         "request": request,
         "tree": tree,
         "file_count": len(rows),
+        "pending_count": pending_count,
+    })
+
+
+@router.get("/file/{file_id}")
+async def file_detail_page(file_id: int, request: Request):
+    """File detail page — preview and tag editor for a managed file."""
+    conn = request.app.state.db
+
+    row = await db.fetch_one(conn, "SELECT * FROM files WHERE id = ?", (file_id,))
+    if row is None:
+        raise HTTPException(404, "File not found")
+
+    file_data = File.from_row(row)
+
+    tags = await db.fetch_all(
+        conn,
+        """SELECT t.name, t.type FROM file_tags ft
+           JOIN tags t ON ft.tag_id = t.id
+           WHERE ft.file_id = ?
+           ORDER BY t.type, t.name""",
+        (file_id,),
+    )
+
+    # Extract current values for root-specific fields
+    root_fields = ROOT_FIELDS.get(file_data.root, [])
+    field_ids = {field_id for field_id, _ in root_fields}
+    tag_values: dict[str, str] = {}
+    extra_tags = []
+    for tag in tags:
+        tag_type = tag["type"]
+        tag_name = tag["name"]
+        prefix = f"{tag_type}:"
+        value = tag_name[len(prefix):] if tag_name.startswith(prefix) else tag_name
+        if tag_type in field_ids:
+            tag_values[tag_type] = value
+        else:
+            extra_tags.append(tag)
+
+    pending_row = await db.fetch_one(
+        conn, "SELECT COUNT(*) as count FROM files WHERE status = 'pending' AND skipped_at IS NULL"
+    )
+    pending_count = pending_row["count"] if pending_row else 0
+
+    return templates.TemplateResponse("file_detail.html", {
+        "request": request,
+        "file": file_data,
+        "tags": tags,
+        "extra_tags": extra_tags,
+        "tag_values": tag_values,
+        "root_fields": root_fields,
+        "pending_count": pending_count,
     })

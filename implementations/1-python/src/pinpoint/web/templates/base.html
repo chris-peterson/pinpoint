@@ -14,10 +14,10 @@
             <li><a href="/" style="text-decoration:none"><strong>&#9673; Pinpoint</strong></a></li>
         </ul>
         <ul>
-            <li><a href="/" {% if request.url.path == "/" %}aria-current="page"{% endif %}>
+            <li><a href="/queue" {% if request.url.path == "/queue" %}aria-current="page"{% endif %}>
                 Queue
-                {% if remaining is defined and remaining > 0 %}
-                    <span class="badge">{{ remaining }}</span>
+                {% if pending_count is defined and pending_count > 0 %}
+                    <span class="badge">{{ pending_count }}</span>
                 {% endif %}
             </a></li>
             <li><a href="/library" {% if request.url.path == "/library" %}aria-current="page"{% endif %}>Library</a></li>

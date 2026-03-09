@@ -18,6 +18,7 @@ Maps SPEC.md requirement IDs to implementation status and code locations.
 | [CM-2] | Single output directory, path from tags | Done | `config.py`, `paths.py` |
 | [CM-3] | Pending: known, original untouched | Done | `discovery.py` |
 | [CM-4] | Managed: accepted, moved to output | Done | `api/queue.py:accept_file` |
+| [CM-5] | Files are source of truth (tags in native metadata) | N/S | |
 
 ## §2 Tag Taxonomy
 
@@ -25,7 +26,7 @@ Maps SPEC.md requirement IDs to implementation status and code locations.
 |---|---|---|---|
 | [TX-1] | `type:value` tag structure | Done | `schema.sql`, `models.py` |
 | [TX-2] | Root override per-file in queue | N/S | |
-| [TX-3] | `class:` auto-assigned from extension | Done | `discovery.py:classify_file` |
+| [TX-3] | `class` derived from extension (not a tag) | Done | `discovery.py:classify_file` |
 | [TX-4] | `name:` replaces filename | Done | `paths.py:_get_name` |
 | [TX-5] | `favorite` column for fast sorting | Partial | Schema exists, no UI toggle |
 | [TX-6] | Tag dictionary / autocomplete | Partial | Endpoint exists, no tree view |
@@ -75,15 +76,19 @@ Maps SPEC.md requirement IDs to implementation status and code locations.
 | [AI-2] | Extract title, artist, album, year, track | Done | `defaults.py:extract_audio_metadata` |
 | [AI-3] | Skip album art images during discovery | Done | `discovery.py:_walk_files` |
 
-## §7 Library & Browse
+## §7 Search & Browsing (Home Page)
 
 | ID | Requirement | Status | Code |
 |---|---|---|---|
-| [LB-1] | Tree view of managed files | Done | `web/routes.py:library_page`, `templates/library.html` |
-| [LB-2] | Contextual icons (play, image, film) | Done | `templates/library.html` |
-| [LB-3] | Filters (date, root, class, tags) | Partial | Root + class filters on queue |
-| [LB-4] | Full-text search | N/S | FTS5 in schema, not wired |
-| [LB-5] | On This Day | N/S | |
+| [LB-1] | Full-text search bar on home page | N/S | FTS5 in schema, not wired |
+| [LB-2] | Results as folder cards + individual files | N/S | |
+| [LB-3] | Filters (root, class, date, person/artist, tags) | Partial | Root + class filters on queue |
+| [LB-4] | Folders as primary browsing unit (hero image + name) | N/S | |
+| [LB-5] | Hero image (first image or stack cover) | N/S | |
+| [LB-6] | Ungrouped files shown alongside folders | N/S | |
+| [LB-7] | Folder detail view with contextual file icons | Partial | Tree view exists in `templates/library.html` |
+| [LB-8] | On This Day | N/S | |
+| [LB-9] | Tag dictionary browser | N/S | |
 
 ## §8 Favorites
 
@@ -119,12 +124,21 @@ Maps SPEC.md requirement IDs to implementation status and code locations.
 | [OM-6] | Mark file as missing (not deleted) | N/S | |
 | [OM-7] | Log missing action | N/S | |
 
-## §12 Extended Attributes (macOS)
+## §12 Tag Persistence
 
 | ID | Requirement | Status | Code |
 |---|---|---|---|
-| [XA-1] | Write tags to xattr | N/S | |
-| [XA-2] | Import xattr/Finder tags | N/S | |
+| [TP-1] | Write tags to native metadata fields | N/S | |
+| [TP-2] | Format-agnostic tags via xattr | N/S | |
+| [TP-3] | Path-derivable tags not written | Done | `api/queue.py:DERIVED_ATTRIBUTES` |
+| [TP-4] | Write metadata on accept | N/S | |
+| [TP-5] | Rewrite metadata on tag change | N/S | |
+| [TP-6] | Mirror to macOS Finder tags | N/S | |
+| [TP-7] | Import Finder tags on discovery | N/S | |
+| [TP-8] | Linux xattr namespace | N/S | |
+| [TP-9] | `pinpoint rebuild` from managed files | N/S | |
+| [TP-10] | Action history not recoverable | Done | `actions.py` (append-only) |
+| [TP-11] | Rebuild cross-checks path vs tags | N/S | |
 
 ## §13 Configuration
 
@@ -141,24 +155,28 @@ Maps SPEC.md requirement IDs to implementation status and code locations.
 
 | Section | Done | Partial | N/S |
 |---|---|---|---|
-| §1 Core Model | 4 | 0 | 0 |
+| §1 Core Model | 4 | 0 | 1 |
 | §2 Tag Taxonomy | 3 | 2 | 1 |
 | §3 Output Path | 8 | 1 | 2 |
 | §4 Queue | 5 | 1 | 3 |
 | §5 Dedup | 1 | 0 | 1 |
 | §6 AI Analysis | 3 | 0 | 0 |
-| §7 Library | 2 | 1 | 2 |
+| §7 Search & Browse | 0 | 2 | 7 |
 | §8 Favorites | 1 | 0 | 1 |
 | §9 File Detail | 0 | 0 | 2 |
 | §10 Data Model | 3 | 0 | 0 |
 | §11 Monitoring | 0 | 0 | 7 |
-| §12 macOS xattr | 0 | 0 | 2 |
+| §12 Tag Persistence | 2 | 0 | 9 |
 | §13 Configuration | 3 | 1 | 0 |
-| **Total** | **33** | **6** | **21** |
+| **Total** | **33** | **7** | **34** |
 
 ```mermaid
+---
+config:
+  look: handDrawn
+---
 pie title Requirement Status
     "Done" : 33
-    "Partial" : 6
-    "Not Started" : 21
+    "Partial" : 7
+    "Not Started" : 34
 ```

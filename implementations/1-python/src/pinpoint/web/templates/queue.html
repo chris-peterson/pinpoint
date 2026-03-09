@@ -3,13 +3,9 @@
 
 {% block content %}
 {% if discovery.running %}
-<div class="discovery-status" hx-get="/{{ filter_qs }}" hx-trigger="every 5s" hx-select=".discovery-status" hx-target=".discovery-status" hx-swap="outerHTML">
+<div class="discovery-status" hx-get="/queue{{ filter_qs }}" hx-trigger="every 5s" hx-select=".discovery-status" hx-target=".discovery-status" hx-swap="outerHTML">
     Scanning <strong>{{ discovery.current_input | basename }}</strong>
     — {{ discovery.processed }} processed, {{ discovery.new }} new, {{ discovery.duplicates }} dupes
-</div>
-{% elif discovery.done_inputs %}
-<div class="discovery-status done">
-    Discovery complete — {{ discovery.new }} new files found
 </div>
 {% endif %}
 
@@ -30,7 +26,7 @@
             </option>
         {% endfor %}
     </select>
-    <span class="filter-count">{{ remaining }} pending</span>
+
 </div>
 
 {% if file %}
@@ -59,6 +55,9 @@
                 <dd>{{ file.creation_date.strftime('%Y-%m-%d %H:%M') }}</dd>
                 {% endif %}
             </dl>
+            <a href="#" class="reveal-link" onclick="fetch('/api/files/{{ file.id }}/reveal', {method:'POST'}); return false;">
+                Show in Finder
+            </a>
         </div>
     </div>
 
@@ -67,59 +66,35 @@
 
         <form id="tag-form">
             {% macro tag_field(field_id, label, placeholder="") %}
-                {% set id3_val = metadata_defaults.get(field_id, '') %}
+                {% set meta_val = metadata_defaults.get(field_id, '') %}
                 {% set fn_val = filename_defaults.get(field_id, '') %}
-                {% set has_id3 = id3_val | length > 0 %}
+                {% set has_meta = meta_val | length > 0 %}
                 {% set has_fn = fn_val | length > 0 %}
-                {% set default_source = 'id3' if has_id3 else ('filename' if has_fn else 'custom') %}
+                {% set display_val = meta_val if has_meta else (fn_val if has_fn else '') %}
                 <label for="{{ field_id }}">{{ label }}</label>
-                <div role="group" class="source-group">
-                    <select class="source-select" onchange="switchSource(this, '{{ field_id }}')" aria-label="Source for {{ label }}">
-                        <option value="custom" {% if default_source == 'custom' %}selected{% endif %}>Custom</option>
-                        {% if has_id3 %}<option value="id3" {% if default_source == 'id3' %}selected{% endif %}>ID3</option>{% endif %}
-                        {% if has_fn %}<option value="filename" {% if default_source == 'filename' %}selected{% endif %}>Filename</option>{% endif %}
-                    </select>
-                    <input type="text" id="{{ field_id }}" name="{{ field_id }}"
-                        value="{{ defaults.get(field_id, '') }}"
-                        data-id3="{{ id3_val }}"
-                        data-filename="{{ fn_val }}"
-                        data-custom="{{ defaults.get(field_id, '') }}"
-                        placeholder="{{ placeholder }}"
-                        {% if default_source != 'custom' %}readonly{% endif %}
-                        hx-get="/api/tags/preview-path/{{ file.id }}"
-                        hx-trigger="input changed delay:300ms"
-                        hx-include="#tag-form"
-                        hx-target="#path-preview"
-                        hx-swap="innerHTML">
-                </div>
+                <input type="text" id="{{ field_id }}" name="{{ field_id }}"
+                    value="{{ display_val }}"
+                    class="tag-input{% if not has_meta and has_fn %} from-filename{% endif %}"
+                    placeholder="{{ placeholder }}"
+                    list="{{ field_id }}-suggestions"
+                    oninput="this.classList.remove('from-filename')"
+                    hx-get="/api/tags/preview-path/{{ file.id }}"
+                    hx-trigger="input changed delay:300ms"
+                    hx-include="#tag-form"
+                    hx-target="#path-preview"
+                    hx-swap="innerHTML">
+                {% if has_meta or has_fn %}
+                <datalist id="{{ field_id }}-suggestions">
+                    {% if has_meta %}<option value="{{ meta_val }}">{{ meta_val }} (metadata)</option>{% endif %}
+                    {% if has_fn and fn_val != meta_val %}<option value="{{ fn_val }}">{{ fn_val }} (filename)</option>{% endif %}
+                </datalist>
+                {% endif %}
             {% endmacro %}
 
-            {% if file.root == "memories" %}
-                {{ tag_field("event", "Event", "vacation:day-2") }}
-                {{ tag_field("name", "Name") }}
-            {% elif file.root == "music" %}
-                {{ tag_field("artist", "Artist") }}
-                {{ tag_field("album", "Album") }}
-                {{ tag_field("year", "Year", "2002") }}
-                {{ tag_field("name", "Track name") }}
-            {% elif file.root == "books" %}
-                {{ tag_field("author", "Author") }}
-                {{ tag_field("title", "Title") }}
-                {{ tag_field("name", "Chapter") }}
-            {% elif file.root == "podcasts" %}
-                {{ tag_field("show", "Show") }}
-                {{ tag_field("name", "Episode") }}
-            {% elif file.root == "tv" %}
-                {{ tag_field("show", "Show") }}
-                {{ tag_field("season", "Season") }}
-                {{ tag_field("name", "Episode") }}
-            {% elif file.root == "movies" %}
-                {{ tag_field("series", "Series (optional)") }}
-                {{ tag_field("name", "Title", "title [year]") }}
-            {% elif file.root == "comedy" %}
-                {{ tag_field("artist", "Performer") }}
-                {{ tag_field("name", "Title", "special-name [year]") }}
-            {% endif %}
+            {% for field_id, label in root_fields %}
+                {{ tag_field(field_id, label) }}
+            {% endfor %}
+
         </form>
 
         <article id="path-preview-container">
@@ -130,7 +105,7 @@
         <div class="queue-actions" role="group">
             <div class="split-button">
                 <button class="secondary" hx-post="/api/queue/{{ file.id }}/skip" hx-swap="none"
-                        hx-on::after-request="window.location.href='/{{ filter_qs }}'">
+                        hx-on::after-request="window.location.href='/queue{{ filter_qs }}'">
                     Skip
                 </button>
                 {% if folder_count > 1 %}
@@ -149,7 +124,7 @@
 
             <div class="split-button">
                 <button class="contrast" hx-post="/api/queue/{{ file.id }}/reject" hx-swap="none"
-                        hx-on::after-request="window.location.href='/{{ filter_qs }}'">
+                        hx-on::after-request="window.location.href='/queue{{ filter_qs }}'">
                     Reject
                 </button>
                 {% if folder_count > 1 %}
@@ -168,7 +143,7 @@
 
             <button hx-post="/api/queue/{{ file.id }}/accept" hx-swap="none"
                     hx-include="#tag-form"
-                    hx-on::after-request="window.location.href='/{{ filter_qs }}'"
+                    hx-on::after-request="window.location.href='/queue{{ filter_qs }}'"
                     id="accept-btn">
                 Accept
             </button>
@@ -185,51 +160,25 @@
         <script>
         const filterQs = '{{ filter_qs }}';
 
-        function switchSource(select, fieldId) {
-            const input = document.getElementById(fieldId);
-            const source = select.value;
-            if (source === 'custom') {
-                input.readOnly = false;
-                input.value = input.dataset.custom;
-                input.focus();
-            } else if (source === 'id3') {
-                input.readOnly = true;
-                input.value = input.dataset.id3;
-            } else if (source === 'filename') {
-                input.readOnly = true;
-                input.value = input.dataset.filename;
-            }
-            htmx.trigger(input, 'input');
-        }
-
-        // Save custom edits so switching back restores them
-        document.querySelectorAll('#tag-form input[type="text"]').forEach(input => {
-            input.addEventListener('input', function() {
-                if (!this.readOnly) {
-                    this.dataset.custom = this.value;
-                }
-            });
-        });
-
         function skipFolder() {
             const form = new FormData();
             form.append('folder', '{{ source_folder }}');
             fetch('/api/queue/folder/skip', { method: 'POST', body: form })
-                .then(() => { window.location.href = '/' + filterQs; });
+                .then(() => { window.location.href = '/queue' + filterQs; });
         }
         function rejectFolder() {
             if (!confirm('Reject all {{ folder_count }} files in this folder?')) return;
             const form = new FormData();
             form.append('folder', '{{ source_folder }}');
             fetch('/api/queue/folder/reject', { method: 'POST', body: form })
-                .then(() => { window.location.href = '/' + filterQs; });
+                .then(() => { window.location.href = '/queue' + filterQs; });
         }
         function acceptFolder() {
             if (!confirm('Accept all {{ folder_count }} files in this folder using their metadata defaults?')) return;
             const form = new FormData();
             form.append('folder', '{{ source_folder }}');
             fetch('/api/queue/folder/accept', { method: 'POST', body: form })
-                .then(() => { window.location.href = '/' + filterQs; });
+                .then(() => { window.location.href = '/queue' + filterQs; });
         }
         function applyFilter(key, value) {
             const params = new URLSearchParams(window.location.search);
@@ -239,7 +188,7 @@
                 params.delete(key);
             }
             const qs = params.toString();
-            window.location.href = '/' + (qs ? '?' + qs : '');
+            window.location.href = '/queue' + (qs ? '?' + qs : '');
         }
         </script>
     </div>
@@ -249,7 +198,7 @@
     <header>Queue empty</header>
     <p>No files pending review{% if filter_root or filter_class %} matching these filters{% endif %}.</p>
     {% if filter_root or filter_class %}
-    <a href="/">Clear filters</a>
+    <a href="/queue">Clear filters</a>
     {% endif %}
 </article>
 {% endif %}

@@ -1,5 +1,18 @@
 inputs:
-  - path: /Volumes/data-1/__todo/Music
+  - path: ../../sample_library/memories
+    root: memories
+  - path: ../../sample_library/music
     root: music
+  - path: ../../sample_library/movies
+    root: movies
+  - path: ../../sample_library/tv
+    root: tv
+  - path: ../../sample_library/podcasts
+    root: podcasts
+  - path: ../../sample_library/books
+    root: books
+  - path: ../../sample_library/comedy
+    root: comedy
 
-output: /Volumes/data-1/files
+output: ../../sample_output
+data_dir: .data
