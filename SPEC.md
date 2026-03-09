@@ -1,5 +1,27 @@
 # SPEC.md — Pinpoint Requirements Specification
 
+## Requirements Notation
+
+Each testable requirement has a stable ID in brackets: `[XX-N]`. Code and DECISIONS.md reference these IDs for traceability.
+
+| Prefix | Section |
+|--------|---------|
+| CM | Core Model (§1) |
+| TX | Tag Taxonomy (§2) |
+| OP | Output Path (§3) |
+| MQ | Migration Queue (§4) |
+| DS | Dedup & Stacking (§5) |
+| AI | AI Analysis (§6) |
+| LB | Library & Browse (§7) |
+| FV | Favorites (§8) |
+| FD | File Detail (§9) |
+| DM | Data Model (§10) |
+| OM | Output Monitoring (§11) |
+| XA | Extended Attributes (§12) |
+| CF | Configuration (§13) |
+
+---
+
 ## Vision
 
 Stop thinking about filenames and folder structures. Just tag your files and let Pinpoint figure out the rest.
@@ -14,8 +36,8 @@ Currently supports images, video, and audio. Designed to extend to any file type
 
 ### Inputs and Output
 
-- **Inputs**: one or more folders the system watches. Each input has a **default root tag** that determines how discovered files are organized. Files are never modified or moved until explicitly accepted.
-- **Output**: a single root directory where accepted files are stored in a deterministic path derived from their tags.
+- **[CM-1]** **Inputs**: one or more folders the system watches. Each input has a **default root tag** that determines how discovered files are organized. Files are never modified or moved until explicitly accepted.
+- **[CM-2]** **Output**: a single root directory where accepted files are stored in a deterministic path derived from their tags.
 
 ### File Lifecycle
 
@@ -28,8 +50,8 @@ flowchart LR
     C -->|Skip| C
 ```
 
-- **Pending**: file is known to the system, thumbnail generated, AI analysis queued. Original file stays where it is.
-- **Managed**: file has been accepted and physically moved to the output tree. The system owns this file.
+- **[CM-3]** **Pending**: file is known to the system, thumbnail generated (for queue and library previews; video thumbnails use an early frame), AI analysis queued. Original file stays where it is.
+- **[CM-4]** **Managed**: file has been accepted and physically moved to the output tree. The system owns this file.
 
 ---
 
@@ -218,7 +240,7 @@ The system maintains a registry of all known tags.
 
 ## 3. Output Path Structure
 
-Each root has a fixed path formula. The path is deterministically derived from tags.
+**[OP-1]** Each root has a fixed path formula. The path is deterministically derived from tags.
 
 ```mermaid
 flowchart TD
@@ -236,7 +258,7 @@ flowchart TD
 Photos and home video, colocated. Organized by date.
 
 ```
-output/memories/<YYYY-MM>/<event:segments>/<n><ext>
+output/memories/<YYYY-MM>/<event:segments>/<name><ext>
 ```
 
 | Tags | Output path |
@@ -247,29 +269,34 @@ output/memories/<YYYY-MM>/<event:segments>/<n><ext>
 | `name:sunset-over-ocean` | `memories/2025-01/sunset-over-ocean.jpg` |
 | `event:hawaii-vacation:snorkeling` + `name:sunset-over-ocean` | `memories/2025-01/hawaii-vacation/snorkeling/sunset-over-ocean.jpg` |
 
-`YYYY-MM` is derived from the file's creation date. Images and videos from the same event sit side by side.
+**[OP-2]** `YYYY-MM` is determined from the best available date source: prefer embedded media metadata (e.g., EXIF, QuickTime) over filesystem dates. If no date can be determined, use the discovery date. Images and videos from the same event sit side by side.
 
 ### `root:music`
 
 Songs. Organized by artist. Albums include release year for chronological browsing.
 
 ```
-output/music/<artist>/<album>/<n><ext>
+output/music/<artist>/<album>/<track> <name><ext>
 ```
+
+**[OP-3]** Output filenames for music MUST include the track number, zero-padded (minimum 2 digits) for ordinal sorting. The track number is extracted from embedded metadata. When no track number is available, the filename is the name alone.
+
+**[OP-4]** For Various Artists compilations (albumartist = "Various Artists"), the artist is "Various Artists" and the original filename is preserved as-is (it typically encodes `## - Artist - Track` which is more informative than just the title).
 
 | Tags | Output path |
 |---|---|
-| `artist:pink-floyd`, `album:[1973] dark-side-of-the-moon`, `name:time` | `music/pink-floyd/[1973] dark-side-of-the-moon/time.flac` |
-| `artist:pink-floyd`, `name:another-brick` | `music/pink-floyd/another-brick.mp3` |
-| `name:mystery-track` | `music/_unknown/mystery-track.mp3` |
+| `artist:Pink Floyd`, `album:Dark Side of the Moon`, `year:1973`, `track:1`, `name:Time` | `music/Pink Floyd/[1973] Dark Side of the Moon/01 Time.flac` |
+| `artist:Pink Floyd`, `name:Another Brick` | `music/Pink Floyd/Another Brick.mp3` |
+| `artist:Various Artists`, `album:8 Mile Soundtrack`, `year:2002`, `name:15 - Gang Starr - Battle` | `music/Various Artists/[2002] 8 Mile Soundtrack/15 - Gang Starr - Battle.mp3` |
+| `name:Mystery Track` | `music/_unknown/Mystery Track.mp3` |
 | (none) | `music/_unknown/track-01.mp3` |
 
-Browsing `music/pink-floyd/` in Finder gives you:
+Browsing `music/Pink Floyd/` in Finder gives you:
 ```
-[1967] the-piper-at-the-gates-of-dawn/
-[1973] dark-side-of-the-moon/
-[1975] wish-you-were-here/
-[1979] the-wall/
+[1967] The Piper at the Gates of Dawn/
+[1973] Dark Side of the Moon/
+[1975] Wish You Were Here/
+[1979] The Wall/
 ```
 
 ### `root:books`
@@ -344,13 +371,31 @@ output/comedy/<artist>/<n><ext>
 | `artist:john-mulaney`, `name:kid-gorgeous [2018]` | `comedy/john-mulaney/kid-gorgeous [2018].mp4` |
 | `artist:john-mulaney` | `comedy/john-mulaney/special.mp4` *(original filename)* |
 
+### Tag value casing
+
+**[OP-5]** Tag values use **Title Case** with spaces as word separators. Minor words (a, an, the, and, or, of, in, on, etc.) stay lowercase unless first or last.
+
+```
+artist:Pink Floyd
+album:Dark Side of the Moon
+name:Time
+event:Hawaii Vacation:Snorkeling
+author:Ursula K Le Guin
+```
+
+Defaults derived from embedded metadata or folder structure are automatically converted to this convention.
+
+### Year is metadata, not part of album name
+
+**[OP-6]** The `[year]` prefix on album directories (e.g., `[1973] Dark Side of the Moon`) is derived automatically from the `year` tag or embedded metadata. Users enter the album name without a year — the year field is separate. This keeps the album name clean in the UI while still producing chronologically sortable output paths.
+
 ### General rules
 
-- When `name:` is set, it replaces the filename. When absent, the original filename is kept.
-- Missing path segments use `_unknown` as a placeholder.
-- Duplicate names within the same directory scope auto-stack with numeric suffixes (`-1`, `-2`).
-- When a stack dissolves to one file, the suffix is removed.
-- Changing any path-affecting tag on a managed file triggers relocation. Empty parent directories are cleaned up.
+- **[OP-7]** When `name:` is set, it replaces the filename. When absent, the original filename is kept.
+- **[OP-8]** Missing path segments use `_unknown` as a placeholder.
+- **[OP-9]** Duplicate names within the same directory scope auto-stack with numeric suffixes (`-1`, `-2`).
+- **[OP-10]** When a stack dissolves to one file, the suffix is removed.
+- **[OP-11]** Changing any path-affecting tag on a managed file triggers relocation. Empty parent directories are cleaned up.
 
 ---
 
@@ -360,11 +405,11 @@ The queue is the primary workflow and the default landing page.
 
 ### Behavior
 
-- Shows pending files **one at a time**, sorted **newest first**.
-- Full-size preview (image viewer, video player, audio player).
-- File metadata: filename, size, dimensions/duration, creation date, source path.
-- **Live preview of the output path**, updating in real time as tags are added or changed.
-- Queue count badge in the sidebar navigation.
+- **[MQ-1]** Shows pending files **one at a time**, sorted **newest first**.
+- **[MQ-2]** Full-size preview (image viewer, video player, audio player).
+- **[MQ-3]** File metadata: filename, size, dimensions/duration, creation date, source path.
+- **[MQ-4]** **Live preview of the output path**, updating in real time as tags are added or changed.
+- **[MQ-5]** Queue count badge in the sidebar navigation.
 
 ### Queue modes
 
@@ -376,10 +421,10 @@ One file at a time. Tag, preview path, accept/skip/reject.
 
 Preview an entire folder or group at once. Useful when metadata APIs or filename parsing pre-fill most tags.
 
-- Table/list view: filename, suggested tags, confidence.
-- "Accept all" applies suggestions and accepts the batch.
-- Individual rows editable or rejectable before batch accept.
-- Click a row to open single-file detail.
+- **[MQ-6]** Table/list view: filename, suggested tags, confidence.
+- **[MQ-7]** "Accept all" applies defaults and accepts the batch. Available when all files in the current source folder have stable embedded metadata (artist, album, year, and track title all present). Shown as a button in the single-file queue view when applicable.
+- **[MQ-8]** Individual rows editable or rejectable before batch accept.
+- **[MQ-9]** Click a row to open single-file detail.
 
 ### Tag entry in the queue
 
@@ -423,11 +468,11 @@ Which tags are "expected" depends on the root:
 
 ### Exact duplicates
 
-- Content hash at discovery. Duplicates never enter the queue.
+- **[DS-1]** Content hash at discovery. Duplicates never enter the queue.
 
 ### Perceptual similarity (images only)
 
-- Perceptual hash at discovery. Files below a configurable hamming distance auto-stack.
+- **[DS-2]** Perceptual hash at discovery. Files below a configurable hamming distance auto-stack.
 
 ### Name-collision stacking
 
@@ -474,11 +519,12 @@ flowchart TD
 
 #### Face detection and recognition
 
-- Detect faces in images. Optionally match against a directory of labeled reference photos (filename = person label).
+- Detect faces in images using a local face detection library. Optionally match against a directory of labeled reference photos (filename = person label).
 - Detected faces become `person:` tag suggestions with bounding box regions.
 - Unknown faces prompt the user to assign a label during review, which is stored for future recognition.
+- Silently skipped if no face detection library is available.
 
-#### Vision LLM
+#### Scene description
 
 - Send images to a local vision model for scene description.
 - Model suggests event, name, and general tags.
@@ -489,13 +535,14 @@ flowchart TD
 
 #### Metadata extraction
 
-- Read embedded tags (ID3, Vorbis, MP4 atoms, etc.).
-- Extract: title, artist, album, year, genre, track number, album art.
+- **[AI-1]** Read embedded tags (ID3, Vorbis, MP4 atoms, etc.).
+- **[AI-2]** Extract: title, artist, album, year, genre, track number, album art.
+- **[AI-3]** Images in directories that contain audio files (cover art, booklet scans) are auto-skipped during discovery.
 
 #### Free API lookup
 
 - **MusicBrainz**: lookup by artist+title for canonical metadata.
-- **AcoustID/Chromaprint**: audio fingerprinting to identify unknown tracks.
+- **AcoustID**: audio fingerprinting to identify unknown tracks.
 - Results mapped to tag suggestions based on the file's root:
 
 | Source | `root:music` | `root:books` | `root:podcasts` |
@@ -516,7 +563,7 @@ For files in `root:movies`, `root:tv`, and `root:comedy` — attempt to identify
 #### Free API lookup
 
 - **TMDb (The Movie Database)**: free API, search by title+year for movies and TV. Returns canonical title, year, overview, genres, cast.
-- **TVDb** or **TMDb TV endpoints**: lookup by show+season+episode for episode titles.
+- TMDb TV endpoints: lookup by show+season+episode for episode titles.
 - Results mapped to tag suggestions:
 
 | Source | `root:movies` | `root:tv` | `root:comedy` |
@@ -540,8 +587,13 @@ For files in `root:movies`, `root:tv`, and `root:comedy` — attempt to identify
 
 ### Library view
 
-- Shows managed files. Grid of thumbnails/icons.
-- Favorites sort first.
+- Shows managed files as a **tree view** mirroring the output directory structure.
+- Directories are expandable nodes. Files are leaf nodes with contextual icons:
+  - Audio files: play icon (&#9654;) — click to play inline.
+  - Images: image icon — click to open/preview.
+  - Video: film icon — click to open/preview.
+- Favorites marked with a star indicator.
+- Favorites sort first within each directory.
 
 ### Filters
 
@@ -582,21 +634,21 @@ For files in `root:movies`, `root:tv`, and `root:comedy` — attempt to identify
 
 ---
 
-## 10. Data Schema
+## 10. Data Model
 
-### Core tables
+### Core entities
 
-- **files** — every known file: id, source path, managed path, status (pending/managed/missing/drifted), root, class, content hash, perceptual hash, creation date, discovery date, managed date, favorite flag, stack membership, analysis status.
-- **tags** — tag dictionary: id, full name (e.g. `event:hawaii-vacation:snorkeling`), type (root/class/event/name/person/artist/author/album/title/show/season/series/general), builtin flag.
-- **file_tags** — join: file id, tag id, region (face bounding box if applicable), timestamp.
-- **suggestions** — AI results: file id, kind, value, confidence, region, status (pending/accepted/dismissed), timestamp.
-- **stacks** — similarity/dedup groups: id, cover file, creation date.
-- **known_faces** — labeled face embeddings: id, label, embedding, source file, creation date.
+- **files** — every known file. Tracks: source location, managed location, lifecycle status (pending/managed/missing/drifted), root, class, content hash, perceptual hash, temporal metadata (creation, discovery, managed dates), favorite flag, stack membership, analysis state.
+- **tags** — tag dictionary. Tracks: full name (e.g. `event:hawaii-vacation:snorkeling`), type (root/class/event/name/person/artist/author/album/title/show/season/series/general), whether built-in.
+- **file_tags** — associates files with tags. Tracks: region (face bounding box if applicable), when applied.
+- **suggestions** — AI analysis results. Tracks: target file, kind, suggested value, confidence, region, status (pending/accepted/dismissed).
+- **stacks** — groups of similar or colliding files. Tracks: cover file, member ordering.
+- **known_faces** — labeled face embeddings for recognition. Tracks: label, embedding vector, source reference.
 - **full-text search index** — across filenames, tag names, metadata, AI descriptions.
 
 ### Action log
 
-- **actions** — append-only audit trail of every state-changing operation.
+- **[DM-1]** **actions** — append-only audit trail of every state-changing operation.
   - timestamp
   - action verb: `discover`, `accept`, `reject`, `delete`, `tag_add`, `tag_remove`, `favorite`, `unfavorite`, `relocate`, `rename`, `move`, `missing`, `stack_create`, `stack_reorder`, `stack_dissolve`, `suggestion_accept`, `suggestion_dismiss`
   - file id (nullable for system-level actions)
@@ -620,10 +672,10 @@ The output directory is a regular folder. Users may interact with it directly vi
 
 ### File renamed
 
-- Detect via filesystem watcher (file at known `managed_path` disappears, new file appears in same directory with same size/hash).
-- Update `managed_path` in the database.
-- Log a `rename` action with old and new paths.
-- **Do not** reverse-derive tags from the new filename. The rename is accepted as-is — tags remain the source of truth. The file is now "drifted" from its tag-derived path.
+- **[OM-1]** Detect via filesystem watcher (file at known `managed_path` disappears, new file appears in same directory with same size/hash).
+- **[OM-2]** Update `managed_path` in the database.
+- **[OM-3]** Log a `rename` action with old and new paths.
+- **[OM-4]** **Do not** reverse-derive tags from the new filename. The rename is accepted as-is — tags remain the source of truth. The file is now "drifted" from its tag-derived path.
 - Optionally surface drifted files in the UI so the user can reconcile (re-tag to match, or trigger a relocate to snap back).
 
 ### File moved
@@ -635,9 +687,9 @@ The output directory is a regular folder. Users may interact with it directly vi
 
 ### File deleted externally
 
-- Detect via watcher (file at known `managed_path` no longer exists, no matching hash found elsewhere).
-- Mark file as `missing` in the database (not deleted from DB — preserve the metadata and action history).
-- Log a `missing` action.
+- **[OM-5]** Detect via watcher (file at known `managed_path` no longer exists, no matching hash found elsewhere).
+- **[OM-6]** Mark file as `missing` in the database (not deleted from DB — preserve the metadata and action history).
+- **[OM-7]** Log a `missing` action.
 - Surface in the UI so the user can acknowledge (remove from DB) or investigate.
 
 ### New file added to output
@@ -683,6 +735,10 @@ output: ~/.pinpoint/files
 ```
 
 Everything else has sensible defaults in code. Hot-reloads on file change.
+
+**Data directory**: Pinpoint stores system data under `~/.pinpoint/` by default (database, thumbnails, etc.). The managed output tree lives at the configured `output:` path within this directory.
+
+Config file location: `~/.pinpoint/config.yaml`. Overridable via `--config <path>` or `PINPOINT_CONFIG` environment variable.
 
 ---
 

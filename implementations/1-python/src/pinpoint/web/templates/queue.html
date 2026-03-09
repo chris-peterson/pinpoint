@@ -1,0 +1,256 @@
+{% extends "base.html" %}
+{% block title %}Queue — Pinpoint{% endblock %}
+
+{% block content %}
+{% if discovery.running %}
+<div class="discovery-status" hx-get="/{{ filter_qs }}" hx-trigger="every 5s" hx-select=".discovery-status" hx-target=".discovery-status" hx-swap="outerHTML">
+    Scanning <strong>{{ discovery.current_input | basename }}</strong>
+    — {{ discovery.processed }} processed, {{ discovery.new }} new, {{ discovery.duplicates }} dupes
+</div>
+{% elif discovery.done_inputs %}
+<div class="discovery-status done">
+    Discovery complete — {{ discovery.new }} new files found
+</div>
+{% endif %}
+
+<div class="queue-filters">
+    <select onchange="applyFilter('root', this.value)">
+        <option value="">All roots</option>
+        {% for r in available_roots %}
+            <option value="{{ r.root }}" {% if filter_root == r.root %}selected{% endif %}>
+                {{ r.root }} ({{ r.cnt }})
+            </option>
+        {% endfor %}
+    </select>
+    <select onchange="applyFilter('file_class', this.value)">
+        <option value="">All types</option>
+        {% for c in available_classes %}
+            <option value="{{ c.file_class }}" {% if filter_class == c.file_class %}selected{% endif %}>
+                {{ c.file_class }} ({{ c.cnt }})
+            </option>
+        {% endfor %}
+    </select>
+    <span class="filter-count">{{ remaining }} pending</span>
+</div>
+
+{% if file %}
+<div class="grid">
+    <div class="preview-panel">
+        {% if file.file_class == "image" %}
+            <img src="/api/files/{{ file.id }}/content" alt="Preview" class="preview-image">
+        {% elif file.file_class == "video" %}
+            <video src="/api/files/{{ file.id }}/content" controls class="preview-image"></video>
+        {% elif file.file_class == "audio" %}
+            <audio src="/api/files/{{ file.id }}/content" controls></audio>
+        {% endif %}
+
+        <div class="file-info">
+            <dl>
+                <dt>Filename</dt>
+                <dd>{{ file.source_path | basename }}</dd>
+                <dt>Source</dt>
+                <dd><small>{{ file.source_path }}</small></dd>
+                <dt>Root</dt>
+                <dd><code>{{ file.root }}</code></dd>
+                <dt>Type</dt>
+                <dd>{{ file.file_class }}</dd>
+                {% if file.creation_date %}
+                <dt>Created</dt>
+                <dd>{{ file.creation_date.strftime('%Y-%m-%d %H:%M') }}</dd>
+                {% endif %}
+            </dl>
+        </div>
+    </div>
+
+    <div class="tag-panel">
+        <h3>Tags</h3>
+
+        <form id="tag-form">
+            {% macro tag_field(field_id, label, placeholder="") %}
+                {% set id3_val = metadata_defaults.get(field_id, '') %}
+                {% set fn_val = filename_defaults.get(field_id, '') %}
+                {% set has_id3 = id3_val | length > 0 %}
+                {% set has_fn = fn_val | length > 0 %}
+                {% set default_source = 'id3' if has_id3 else ('filename' if has_fn else 'custom') %}
+                <label for="{{ field_id }}">{{ label }}</label>
+                <div role="group" class="source-group">
+                    <select class="source-select" onchange="switchSource(this, '{{ field_id }}')" aria-label="Source for {{ label }}">
+                        <option value="custom" {% if default_source == 'custom' %}selected{% endif %}>Custom</option>
+                        {% if has_id3 %}<option value="id3" {% if default_source == 'id3' %}selected{% endif %}>ID3</option>{% endif %}
+                        {% if has_fn %}<option value="filename" {% if default_source == 'filename' %}selected{% endif %}>Filename</option>{% endif %}
+                    </select>
+                    <input type="text" id="{{ field_id }}" name="{{ field_id }}"
+                        value="{{ defaults.get(field_id, '') }}"
+                        data-id3="{{ id3_val }}"
+                        data-filename="{{ fn_val }}"
+                        data-custom="{{ defaults.get(field_id, '') }}"
+                        placeholder="{{ placeholder }}"
+                        {% if default_source != 'custom' %}readonly{% endif %}
+                        hx-get="/api/tags/preview-path/{{ file.id }}"
+                        hx-trigger="input changed delay:300ms"
+                        hx-include="#tag-form"
+                        hx-target="#path-preview"
+                        hx-swap="innerHTML">
+                </div>
+            {% endmacro %}
+
+            {% if file.root == "memories" %}
+                {{ tag_field("event", "Event", "vacation:day-2") }}
+                {{ tag_field("name", "Name") }}
+            {% elif file.root == "music" %}
+                {{ tag_field("artist", "Artist") }}
+                {{ tag_field("album", "Album") }}
+                {{ tag_field("year", "Year", "2002") }}
+                {{ tag_field("name", "Track name") }}
+            {% elif file.root == "books" %}
+                {{ tag_field("author", "Author") }}
+                {{ tag_field("title", "Title") }}
+                {{ tag_field("name", "Chapter") }}
+            {% elif file.root == "podcasts" %}
+                {{ tag_field("show", "Show") }}
+                {{ tag_field("name", "Episode") }}
+            {% elif file.root == "tv" %}
+                {{ tag_field("show", "Show") }}
+                {{ tag_field("season", "Season") }}
+                {{ tag_field("name", "Episode") }}
+            {% elif file.root == "movies" %}
+                {{ tag_field("series", "Series (optional)") }}
+                {{ tag_field("name", "Title", "title [year]") }}
+            {% elif file.root == "comedy" %}
+                {{ tag_field("artist", "Performer") }}
+                {{ tag_field("name", "Title", "special-name [year]") }}
+            {% endif %}
+        </form>
+
+        <article id="path-preview-container">
+            <header>Output path</header>
+            <code id="path-preview">{{ preview_path }}</code>
+        </article>
+
+        <div class="queue-actions" role="group">
+            <div class="split-button">
+                <button class="secondary" hx-post="/api/queue/{{ file.id }}/skip" hx-swap="none"
+                        hx-on::after-request="window.location.href='/{{ filter_qs }}'">
+                    Skip
+                </button>
+                {% if folder_count > 1 %}
+                <details class="dropdown secondary">
+                    <summary class="secondary"></summary>
+                    <ul>
+                        <li>
+                            <a href="#" onclick="skipFolder(); return false;">
+                                Skip folder ({{ folder_count }} files)
+                            </a>
+                        </li>
+                    </ul>
+                </details>
+                {% endif %}
+            </div>
+
+            <div class="split-button">
+                <button class="contrast" hx-post="/api/queue/{{ file.id }}/reject" hx-swap="none"
+                        hx-on::after-request="window.location.href='/{{ filter_qs }}'">
+                    Reject
+                </button>
+                {% if folder_count > 1 %}
+                <details class="dropdown contrast">
+                    <summary class="contrast"></summary>
+                    <ul>
+                        <li>
+                            <a href="#" onclick="rejectFolder(); return false;">
+                                Reject folder ({{ folder_count }} files)
+                            </a>
+                        </li>
+                    </ul>
+                </details>
+                {% endif %}
+            </div>
+
+            <button hx-post="/api/queue/{{ file.id }}/accept" hx-swap="none"
+                    hx-include="#tag-form"
+                    hx-on::after-request="window.location.href='/{{ filter_qs }}'"
+                    id="accept-btn">
+                Accept
+            </button>
+        </div>
+
+        {% if folder_ready %}
+        <div class="queue-actions" style="margin-top: 0.25rem;">
+            <button onclick="acceptFolder()" class="outline">
+                Accept folder ({{ folder_count }} files)
+            </button>
+        </div>
+        {% endif %}
+
+        <script>
+        const filterQs = '{{ filter_qs }}';
+
+        function switchSource(select, fieldId) {
+            const input = document.getElementById(fieldId);
+            const source = select.value;
+            if (source === 'custom') {
+                input.readOnly = false;
+                input.value = input.dataset.custom;
+                input.focus();
+            } else if (source === 'id3') {
+                input.readOnly = true;
+                input.value = input.dataset.id3;
+            } else if (source === 'filename') {
+                input.readOnly = true;
+                input.value = input.dataset.filename;
+            }
+            htmx.trigger(input, 'input');
+        }
+
+        // Save custom edits so switching back restores them
+        document.querySelectorAll('#tag-form input[type="text"]').forEach(input => {
+            input.addEventListener('input', function() {
+                if (!this.readOnly) {
+                    this.dataset.custom = this.value;
+                }
+            });
+        });
+
+        function skipFolder() {
+            const form = new FormData();
+            form.append('folder', '{{ source_folder }}');
+            fetch('/api/queue/folder/skip', { method: 'POST', body: form })
+                .then(() => { window.location.href = '/' + filterQs; });
+        }
+        function rejectFolder() {
+            if (!confirm('Reject all {{ folder_count }} files in this folder?')) return;
+            const form = new FormData();
+            form.append('folder', '{{ source_folder }}');
+            fetch('/api/queue/folder/reject', { method: 'POST', body: form })
+                .then(() => { window.location.href = '/' + filterQs; });
+        }
+        function acceptFolder() {
+            if (!confirm('Accept all {{ folder_count }} files in this folder using their metadata defaults?')) return;
+            const form = new FormData();
+            form.append('folder', '{{ source_folder }}');
+            fetch('/api/queue/folder/accept', { method: 'POST', body: form })
+                .then(() => { window.location.href = '/' + filterQs; });
+        }
+        function applyFilter(key, value) {
+            const params = new URLSearchParams(window.location.search);
+            if (value) {
+                params.set(key, value);
+            } else {
+                params.delete(key);
+            }
+            const qs = params.toString();
+            window.location.href = '/' + (qs ? '?' + qs : '');
+        }
+        </script>
+    </div>
+</div>
+{% else %}
+<article>
+    <header>Queue empty</header>
+    <p>No files pending review{% if filter_root or filter_class %} matching these filters{% endif %}.</p>
+    {% if filter_root or filter_class %}
+    <a href="/">Clear filters</a>
+    {% endif %}
+</article>
+{% endif %}
+{% endblock %}

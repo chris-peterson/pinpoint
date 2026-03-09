@@ -1,0 +1,16 @@
+# Implementation 1: Python
+
+run *args:
+    cd {{justfile_directory()}} && uv run python -m pinpoint --config {{justfile_directory()}}/config.yaml {{args}}
+
+dev *args:
+    cd {{justfile_directory()}} && uv run python -m pinpoint --config {{justfile_directory()}}/config.yaml --reload {{args}}
+
+test *args:
+    cd {{justfile_directory()}} && uv run pytest {{args}}
+
+lint:
+    cd {{justfile_directory()}} && uv run ruff check src/
+
+format:
+    cd {{justfile_directory()}} && uv run ruff format src/

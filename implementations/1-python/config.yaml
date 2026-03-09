@@ -1,0 +1,5 @@
+inputs:
+  - path: /Volumes/data-1/__todo/Music
+    root: music
+
+output: /Volumes/data-1/files

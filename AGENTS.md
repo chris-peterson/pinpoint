@@ -12,6 +12,13 @@ This is a greenfield project. The spec describes *what* the system should do, no
 - AI analysis must be local (no cloud APIs except free music/movie metadata lookups).
 - Optional dependencies must degrade gracefully — never crash if something isn't installed.
 
+## Implementation conventions
+
+- Each implementation lives in `implementations/<num>-<name>/`.
+- Each implementation must include a `DECISIONS.md` documenting HOW/WHY choices were made (anything that's WHAT belongs in `SPEC.md`).
+- Each implementation must include a `.gitignore` tailored to its language/toolchain.
+- Each implementation must include a `justfile` with at minimum a `run` recipe.
+
 ## Build philosophy
 
 - **Run early, run often.** Get the smallest vertical slice working end-to-end before expanding. A good first milestone: discover files from one input folder, show them in a queue, accept one with a `name:` tag, verify it lands at the correct output path.
@@ -49,6 +56,14 @@ The spec intentionally leaves these to the implementer:
 - **File structure** — monorepo, multi-file, modular — whatever makes sense for the chosen stack. The spec doesn't dictate.
 - **Face detection library** — InsightFace, dlib, OpenCV, or anything else that runs locally.
 - **Vision model** — Ollama with moondream/llava, or any local vision model. Must work on CPU (GPU optional).
+
+## SPEC is the source of truth
+
+Always consider whether a change should be reflected in `SPEC.md`:
+
+- **New requirements from the user** — if the user introduces something new (a behavior, convention, or UX pattern) that would apply to any future implementation, promote it from `DECISIONS.md` into `SPEC.md`. Implementation-specific choices stay in `DECISIONS.md`; universal requirements belong in `SPEC.md`.
+- **Conflicts** — if the user says something that contradicts `SPEC.md`, call it out explicitly and ask to reconcile before proceeding. Don't silently override the spec.
+- **DECISIONS.md is for HOW/WHY** — if you notice a decision that's really a WHAT (describes behavior, not implementation choice), move it to `SPEC.md`.
 
 ## Things that matter
 
