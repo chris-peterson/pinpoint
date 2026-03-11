@@ -75,7 +75,7 @@
         function saveTags(fileId) {
             const form = document.getElementById('tag-form');
             const formData = new FormData(form);
-            fetch('/api/files/' + fileId + '/tags', {
+            fetch('/api/tags/files/' + fileId, {
                 method: 'PUT',
                 body: formData
             }).then(r => r.json()).then(data => {

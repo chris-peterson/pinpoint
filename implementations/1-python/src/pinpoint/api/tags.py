@@ -171,7 +171,7 @@ async def preview_path(file_id: int, request: Request, **kwargs):
     original_filename = Path(file.source_path).name
     relative_path = derive_path(file.root, merged, original_filename, creation_date)
 
-    return {"path": str(config.output / relative_path)}
+    return HTMLResponse(str(config.output / relative_path))
 
 
 @router.get("/files/{file_id}/html", response_class=HTMLResponse)
@@ -297,7 +297,14 @@ async def save_tags(file_id: int, request: Request):
 
         # Relocate
         new_path.parent.mkdir(parents=True, exist_ok=True)
+        old_parent = Path(old_path).parent
         shutil.move(old_path, str(new_path))
+
+        # Clean up empty parent directories left behind
+        output_root = config.output
+        while old_parent != output_root and old_parent.exists() and not any(old_parent.iterdir()):
+            old_parent.rmdir()
+            old_parent = old_parent.parent
 
         await conn.execute(
             "UPDATE files SET managed_path = ? WHERE id = ?",

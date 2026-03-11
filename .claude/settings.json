@@ -1,8 +1,14 @@
 {
   "hooks": {
-    "user-prompt-submit": [
+    "PostToolUse": [
       {
-        "command": "echo 'REMINDER: After completing this task, evaluate whether SPEC.md or DECISIONS.md needs updating. New behaviors/conventions that would apply to any implementation belong in SPEC.md. Implementation-specific choices belong in DECISIONS.md.'"
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"$CLAUDE_FILE_PATH\" in */implementations/*) echo 'REMINDER: Implementation file changed. If this is specific to this implementation, consider updating DECISIONS.md. If it defines a behavior/convention for all implementations, consider updating SPEC.md.' ;; esac"
+          }
+        ]
       }
     ]
   }
