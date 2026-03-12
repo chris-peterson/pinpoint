@@ -1,0 +1,22 @@
+{% if results | length > 0 %}
+<ul class="results-list">
+  {% for r in results %}
+  <li>
+    <a href="/files/{{ r.id }}" class="result-row">
+      <span class="r-icon">
+        {% if r.file_class == 'image' %}🖼{% elif r.file_class == 'video' %}🎬{% elif r.file_class == 'audio' %}🎵{% else %}📄{% endif %}
+      </span>
+      <span class="r-name">
+        {{ r.managed_path.split('/') | last if r.managed_path else r.source_path.split('/') | last }}
+      </span>
+      {% if r.favorite %}<span class="r-star">★</span>{% endif %}
+      <span class="r-root">{{ r.root }}</span>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% elif q %}
+<div class="empty-state" style="padding:2rem">
+  <p class="text-faint">No results for "{{ q }}"</p>
+</div>
+{% endif %}

@@ -1,0 +1,166 @@
+{% extends "_layout.html" %}
+
+{% block title %}Pinpoint — {{ file.managed_path.split('/') | last if file.managed_path else file.source_path.split('/') | last }}{% endblock %}
+
+{% block content %}
+<div class="breadcrumbs mb-2">
+  <a href="/">Home</a>
+  <span class="sep">/</span>
+  {% if file.status == 'managed' %}
+    <a href="/library">Library</a>
+  {% else %}
+    <a href="/queue">Queue</a>
+  {% endif %}
+  <span class="sep">/</span>
+  <span>{{ file.managed_path.split('/') | last if file.managed_path else file.source_path.split('/') | last }}</span>
+</div>
+
+<div class="detail-layout">
+  <div>
+    <div class="preview-panel">
+      {% if file.file_class == 'image' %}
+        <img src="/preview/{{ file.id }}" alt="Preview">
+      {% elif file.file_class == 'video' %}
+        <video src="/preview/{{ file.id }}" controls style="max-width:100%"></video>
+      {% elif file.file_class == 'audio' %}
+        <div style="padding:2rem;text-align:center;width:100%">
+          <div style="font-size:4rem;opacity:0.3;margin-bottom:1rem">♫</div>
+          <audio src="/preview/{{ file.id }}" controls style="width:100%"></audio>
+        </div>
+      {% else %}
+        <div class="empty-state"><div class="icon">📄</div></div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="detail-sidebar">
+    <div class="flex items-center justify-between mb-1">
+      <h3>Details</h3>
+      <button class="btn btn-ghost" onclick="toggleFavorite()" id="fav-btn">
+        {% if file.favorite %}★{% else %}☆{% endif %}
+      </button>
+    </div>
+
+    <dl class="file-meta">
+      <dt>Status</dt><dd>{{ file.status }}</dd>
+      <dt>Root</dt><dd>{{ file.root }}</dd>
+      <dt>Class</dt><dd>{{ file.file_class }}</dd>
+      {% if file.creation_date %}<dt>Created</dt><dd>{{ file.creation_date }}</dd>{% endif %}
+      {% if file.managed_path %}<dt>Path</dt><dd style="word-break:break-all">{{ file.managed_path }}</dd>{% endif %}
+    </dl>
+
+    {% if file.status == 'managed' %}
+    <form id="tag-form" method="post" action="/api/files/{{ file.id }}/tags">
+      <h3 class="mt-2 mb-1">Tags</h3>
+      {% for field in rootFields %}
+        {% set fid = field[0] %}
+        {% set flabel = field[1] %}
+        <div class="field-group">
+          <label>{{ flabel }}</label>
+          {% if fid in multiValueFields %}
+            <div class="chip-input" id="chip-{{ fid }}">
+              {% for pv in personValues %}
+                <span class="chip" data-value="{{ pv }}">{{ pv }}<span class="remove" onclick="this.parentElement.remove()">×</span></span>
+              {% endfor %}
+              <input type="text" placeholder="Add {{ flabel | lower }}…" data-field="{{ fid }}">
+            </div>
+          {% else %}
+            <input type="text" name="{{ fid }}" value="{{ tagValues[fid] or '' }}" placeholder="{{ flabel }}…">
+          {% endif %}
+        </div>
+      {% endfor %}
+
+      <div class="btn-group">
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+    {% endif %}
+
+    {% if extraTags | length > 0 %}
+    <div class="mt-2">
+      <h3 class="mb-1">Other Tags</h3>
+      {% for tag in extraTags %}
+        <span class="chip">{{ tag.name }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if recentActions | length > 0 %}
+    <div class="mt-2">
+      <h3 class="mb-1">History</h3>
+      {% for action in recentActions %}
+      <div style="font-size:0.75rem;color:var(--text-faint);padding:0.2rem 0">
+        <span class="text-dim">{{ action.verb }}</span>
+        <span>{{ action.timestamp }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const fileId = {{ file.id }};
+
+  async function toggleFavorite() {
+    const resp = await fetch(`/api/files/${fileId}/favorite`, { method: 'POST' });
+    const result = await resp.json();
+    document.getElementById('fav-btn').textContent = result.favorite ? '★' : '☆';
+  }
+
+  // Tag form
+  const tagForm = document.getElementById('tag-form');
+  if (tagForm) {
+    tagForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const data = {};
+      const formData = new FormData(tagForm);
+      for (const [key, val] of formData.entries()) data[key] = val;
+
+      document.querySelectorAll('.chip-input').forEach(container => {
+        const field = container.querySelector('input').dataset.field;
+        const chips = container.querySelectorAll('.chip');
+        const values = Array.from(chips).map(c => c.dataset.value);
+        if (values.length > 0) data[field] = values;
+      });
+
+      const resp = await fetch(`/api/files/${fileId}/tags`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      if (resp.ok) location.reload();
+      else alert('Save failed');
+    });
+  }
+
+  // Chip input behavior
+  document.querySelectorAll('.chip-input').forEach(container => {
+    const input = container.querySelector('input');
+    const field = input.dataset.field;
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ',') {
+        e.preventDefault();
+        const val = input.value.trim().replace(/,$/,'');
+        if (val) {
+          const chip = document.createElement('span');
+          chip.className = 'chip';
+          chip.dataset.value = val;
+          chip.innerHTML = `${val}<span class="remove" onclick="this.parentElement.remove()">×</span>`;
+          container.insertBefore(chip, input);
+          input.value = '';
+        }
+      }
+      if (e.key === 'Backspace' && !input.value) {
+        const last = container.querySelector('.chip:last-of-type');
+        if (last) last.remove();
+      }
+    });
+
+    container.addEventListener('click', () => input.focus());
+  });
+</script>
+{% endblock %}

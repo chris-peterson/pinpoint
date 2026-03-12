@@ -1,0 +1,36 @@
+{% extends "_layout.html" %}
+{% set active = "library" %}
+
+{% block title %}Pinpoint — Library{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2>Library</h2>
+  <div class="subtitle">{{ files | length }} managed file{{ 's' if files | length != 1 }}</div>
+</div>
+
+{% if files | length > 0 %}
+<ul class="results-list">
+  {% for f in files %}
+  <li>
+    <a href="/files/{{ f.id }}" class="result-row">
+      <span class="r-icon">
+        {% if f.file_class == 'image' %}🖼{% elif f.file_class == 'video' %}🎬{% elif f.file_class == 'audio' %}🎵{% else %}📄{% endif %}
+      </span>
+      <span class="r-name">
+        {{ f.managed_path.split('/') | last if f.managed_path else f.source_path.split('/') | last }}
+      </span>
+      {% if f.favorite %}<span class="r-star">★</span>{% endif %}
+      <span class="r-root">{{ f.root }}</span>
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<div class="empty-state">
+  <div class="icon">▦</div>
+  <h3>Library is empty</h3>
+  <p>Accept files from the <a href="/queue">queue</a> to build your library.</p>
+</div>
+{% endif %}
+{% endblock %}

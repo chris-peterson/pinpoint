@@ -1,0 +1,126 @@
+{% extends "_layout.html" %}
+{% set active = "home" %}
+
+{% block title %}Pinpoint — Home{% endblock %}
+
+{% block sidebar_footer %}
+<div class="stat"><span>Managed</span><span class="stat-value">{{ managedCount }}</span></div>
+<div class="stat"><span>Pending</span><span class="stat-value">{{ pendingCount }}</span></div>
+{% if missingCount > 0 %}
+<div class="stat"><span>Missing</span><span class="stat-value text-danger">{{ missingCount }}</span></div>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2>Home</h2>
+</div>
+
+<div class="search-bar">
+  <span class="search-icon">⌕</span>
+  <input
+    type="search"
+    placeholder="Search files, tags, metadata..."
+    value="{{ q }}"
+    id="search-input"
+    autocomplete="off"
+  >
+</div>
+
+<div id="search-results">
+  {% if q %}
+    {% include "_search_results.html" %}
+  {% endif %}
+</div>
+
+{% if not q %}
+  {% if onThisDay | length > 0 %}
+  <div class="mb-2">
+    <div class="section-label"><span class="icon">✦</span> On This Day</div>
+    <div class="otd-strip">
+      {% for item in onThisDay %}
+      <a href="/files/{{ item.id }}" class="otd-card">
+        {% if item.fileClass == 'image' %}
+          <img src="/preview/{{ item.id }}" alt="" loading="lazy">
+        {% else %}
+          <span class="otd-icon">
+            {% if item.fileClass == 'video' %}🎬{% elif item.fileClass == 'audio' %}🎵{% else %}📄{% endif %}
+          </span>
+        {% endif %}
+        <span class="otd-year">{{ item.year }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <div>
+    <div class="flex items-center justify-between mb-1">
+      <div class="section-label"><span class="icon">▤</span> Browse</div>
+      <div class="filter-bar">
+        <select onchange="location.href='/?root='+this.value+'&file_class={{ filterClass }}'">
+          <option value="">All roots</option>
+          {% for r in rootCounts %}
+          <option value="{{ r.root }}" {% if filterRoot == r.root %}selected{% endif %}>{{ r.root }} ({{ r.cnt }})</option>
+          {% endfor %}
+        </select>
+        <select onchange="location.href='/?root={{ filterRoot }}&file_class='+this.value">
+          <option value="">All types</option>
+          {% for c in classCounts %}
+          <option value="{{ c.file_class }}" {% if filterClass == c.file_class %}selected{% endif %}>{{ c.file_class }} ({{ c.cnt }})</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    {% if folders | length > 0 %}
+    <div class="folder-grid">
+      {% for folder in folders %}
+      <a href="/browse?path={{ folder.key }}" class="folder-card">
+        <div class="hero">
+          {% if folder.heroId %}
+            <img src="/preview/{{ folder.heroId }}" alt="" loading="lazy">
+          {% else %}
+            <span class="icon-placeholder">
+              {% if folder.root == 'music' %}♫{% elif folder.root == 'movie' %}🎬{% elif folder.root == 'tv' %}📺{% elif folder.root == 'memory' %}📸{% elif folder.root == 'book' %}📖{% elif folder.root == 'podcast' %}🎙{% elif folder.root == 'comedy' %}🎤{% else %}📁{% endif %}
+            </span>
+          {% endif %}
+        </div>
+        <div class="info">
+          <div class="name">{{ folder.label }}</div>
+          <div class="meta">{{ folder.count }} file{{ 's' if folder.count != 1 }} · {{ folder.root }}</div>
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <div class="icon">◎</div>
+      <h3>No managed files yet</h3>
+      <p>Accept files from the <a href="/queue">queue</a> to start browsing.</p>
+    </div>
+    {% endif %}
+  </div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const searchInput = document.getElementById('search-input');
+  const resultsDiv = document.getElementById('search-results');
+  let debounce;
+
+  searchInput.addEventListener('input', () => {
+    clearTimeout(debounce);
+    const q = searchInput.value;
+    if (q.length < 2) {
+      resultsDiv.innerHTML = '';
+      return;
+    }
+    debounce = setTimeout(async () => {
+      const resp = await fetch('/api/search?q=' + encodeURIComponent(q));
+      resultsDiv.innerHTML = await resp.text();
+    }, 300);
+  });
+</script>
+{% endblock %}

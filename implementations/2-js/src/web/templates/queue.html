@@ -1,0 +1,278 @@
+{% extends "_layout.html" %}
+{% set active = "queue" %}
+
+{% block title %}Pinpoint — Queue{% endblock %}
+
+{% block sidebar_footer %}
+<div class="stat"><span>In queue</span><span class="stat-value">{{ totalPending }}</span></div>
+{% for r in rootCounts %}
+<div class="stat"><span>{{ r.root }}</span><span class="stat-value">{{ r.cnt }}</span></div>
+{% endfor %}
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="flex items-center justify-between">
+    <div>
+      <h2>Queue</h2>
+      <div class="subtitle">{{ totalPending }} file{{ 's' if totalPending != 1 }} pending</div>
+    </div>
+    <div class="filter-bar">
+      <select onchange="location.href='/queue?root='+this.value+'&file_class={{ filterClass }}'">
+        <option value="">All roots</option>
+        {% for r in rootCounts %}
+        <option value="{{ r.root }}" {% if filterRoot == r.root %}selected{% endif %}>{{ r.root }} ({{ r.cnt }})</option>
+        {% endfor %}
+      </select>
+      <select onchange="location.href='/queue?root={{ filterRoot }}&file_class='+this.value">
+        <option value="">All types</option>
+        {% for c in classCounts %}
+        <option value="{{ c.file_class }}" {% if filterClass == c.file_class %}selected{% endif %}>{{ c.file_class }} ({{ c.cnt }})</option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+</div>
+
+{% if file %}
+<div class="queue-layout">
+  <div>
+    <div class="preview-panel">
+      {% if file.file_class == 'image' %}
+        <img src="/preview/{{ file.id }}" alt="Preview">
+      {% elif file.file_class == 'video' %}
+        <video src="/preview/{{ file.id }}" controls style="max-width:100%"></video>
+      {% elif file.file_class == 'audio' %}
+        <div style="padding:2rem;text-align:center;width:100%">
+          <div style="font-size:4rem;opacity:0.3;margin-bottom:1rem">♫</div>
+          <audio src="/preview/{{ file.id }}" controls style="width:100%"></audio>
+        </div>
+      {% else %}
+        <div class="empty-state"><div class="icon">📄</div><p>No preview available</p></div>
+      {% endif %}
+    </div>
+
+    <dl class="file-meta mt-1">
+      <dt>File</dt><dd>{{ file.source_path.split('/') | last }}</dd>
+      <dt>Source</dt><dd class="text-faint">{{ file.source_path }}</dd>
+      {% if file.creation_date %}<dt>Created</dt><dd>{{ file.creation_date }}</dd>{% endif %}
+    </dl>
+
+    {% if folderCount > 1 %}
+    <div class="mt-1" style="font-size:0.8rem;color:var(--text-faint)">
+      📁 {{ folderCount }} files from this folder
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="tag-panel">
+    <h3>
+      Tags
+      {% if file.analysis_status == 'analyzing' %}
+        <span class="analysis-badge analyzing">analyzing…</span>
+      {% elif file.analysis_status == 'done' %}
+        <span class="analysis-badge done">AI</span>
+      {% endif %}
+    </h3>
+
+    <div class="root-selector">
+      {% for root in ['memory','music','movie','tv','podcast','book','comedy'] %}
+        <span class="root-pill {% if file.root == root %}active{% endif %}">{{ root }}</span>
+      {% endfor %}
+    </div>
+
+    <form id="accept-form" method="post" action="/api/files/{{ file.id }}/accept">
+      {% for field in rootFields %}
+        {% set fid = field[0] %}
+        {% set flabel = field[1] %}
+        {% set isExpected = fid in expectedTags %}
+        {% set defaultVal = fieldDefaults[fid] or '' %}
+        {% set isFromMetadata = fid in metadataDefs %}
+        {% set isFromFilename = fid in filenameDefs and not isFromMetadata %}
+
+        <div class="field-group">
+          <label>
+            {% if isExpected and not defaultVal %}<span class="expected-dot"></span>{% endif %}
+            {{ flabel }}
+            {% if isFromMetadata %}
+              <span class="source-badge metadata">metadata</span>
+            {% elif isFromFilename %}
+              <span class="source-badge filename">filename</span>
+            {% endif %}
+          </label>
+
+          {% if fid in multiValueFields %}
+            <div class="chip-input" id="chip-{{ fid }}">
+              <input type="text" placeholder="Add {{ flabel | lower }}…" data-field="{{ fid }}">
+            </div>
+          {% else %}
+            <input
+              type="text"
+              name="{{ fid }}"
+              value="{{ defaultVal }}"
+              placeholder="{{ flabel }}…"
+              class="tag-field {% if isFromMetadata %}from-metadata{% elif isFromFilename %}from-filename{% endif %}"
+              data-field="{{ fid }}"
+            >
+          {% endif %}
+        </div>
+      {% endfor %}
+
+      <div class="path-preview" id="path-preview">{{ pathPreview }}</div>
+
+      <div class="btn-group">
+        <button type="submit" class="btn btn-primary">Accept</button>
+        <button type="button" class="btn btn-secondary" onclick="skipFile()">Skip</button>
+        <button type="button" class="btn btn-danger" onclick="rejectFile()">Reject</button>
+      </div>
+
+      {% if folderCount > 1 %}
+      <div class="folder-accept mt-2">
+        <div style="border-top:1px solid var(--border-subtle);padding-top:0.75rem">
+          {% if folderReady %}
+            <button type="button" class="btn btn-primary" style="width:100%" onclick="acceptFolder()">
+              Accept all {{ folderCount }} files in folder
+            </button>
+            <div style="font-size:0.7rem;color:var(--text-faint);margin-top:0.3rem;text-align:center">
+              All files have complete metadata
+            </div>
+          {% else %}
+            <button type="button" class="btn btn-secondary" style="width:100%;opacity:0.6" onclick="acceptFolder()" title="Some files are missing expected tags — they'll use defaults">
+              Accept all {{ folderCount }} anyway…
+            </button>
+            <div style="font-size:0.7rem;color:var(--warning);margin-top:0.3rem;text-align:center">
+              Some files missing expected tags
+            </div>
+          {% endif %}
+        </div>
+      </div>
+      {% endif %}
+    </form>
+  </div>
+</div>
+{% else %}
+<div class="empty-state">
+  <div class="icon">✓</div>
+  <h3>Queue is empty</h3>
+  <p>All files have been reviewed. New files will appear here when discovered.</p>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if file %}
+<script>
+  const fileId = {{ file.id }};
+
+  // Live path preview
+  let previewDebounce;
+  document.querySelectorAll('.tag-field').forEach(input => {
+    input.addEventListener('input', () => {
+      clearTimeout(previewDebounce);
+      previewDebounce = setTimeout(updatePathPreview, 200);
+    });
+  });
+
+  async function updatePathPreview() {
+    const data = {};
+    document.querySelectorAll('.tag-field').forEach(input => {
+      if (input.value.trim()) data[input.dataset.field] = input.value.trim();
+    });
+    try {
+      const resp = await fetch(`/api/files/${fileId}/preview-path`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      const result = await resp.json();
+      document.getElementById('path-preview').textContent = result.path;
+    } catch {}
+  }
+
+  // Accept form submission
+  document.getElementById('accept-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const data = {};
+    for (const [key, val] of formData.entries()) {
+      data[key] = val;
+    }
+    // Add chip values for multi-value fields
+    document.querySelectorAll('.chip-input').forEach(container => {
+      const field = container.querySelector('input').dataset.field;
+      const chips = container.querySelectorAll('.chip');
+      const values = Array.from(chips).map(c => c.dataset.value);
+      if (values.length > 0) data[field] = values;
+    });
+
+    const resp = await fetch(`/api/files/${fileId}/accept`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    if (resp.ok) {
+      location.reload();
+    } else {
+      const err = await resp.json();
+      alert('Error: ' + (err.error || 'Unknown'));
+    }
+  });
+
+  async function skipFile() {
+    await fetch(`/api/files/${fileId}/skip`, { method: 'POST' });
+    location.reload();
+  }
+
+  async function rejectFile() {
+    if (!confirm('Reject this file? It will be removed from the queue.')) return;
+    await fetch(`/api/files/${fileId}/reject`, { method: 'POST' });
+    location.reload();
+  }
+
+  async function acceptFolder() {
+    const folder = '{{ sourceFolder }}';
+    if (!confirm(`Accept all files in this folder?\n\n${folder}`)) return;
+    const resp = await fetch('/api/folder/accept', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folder }),
+    });
+    const result = await resp.json();
+    if (result.ok) {
+      location.reload();
+    } else {
+      alert('Error: ' + (result.error || 'Unknown'));
+    }
+  }
+
+  // Chip input behavior
+  document.querySelectorAll('.chip-input').forEach(container => {
+    const input = container.querySelector('input');
+    const field = input.dataset.field;
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ',') {
+        e.preventDefault();
+        const val = input.value.trim().replace(/,$/,'');
+        if (val) addChip(container, field, val);
+        input.value = '';
+      }
+      if (e.key === 'Backspace' && !input.value) {
+        const last = container.querySelector('.chip:last-of-type');
+        if (last) last.remove();
+      }
+    });
+
+    container.addEventListener('click', () => input.focus());
+  });
+
+  function addChip(container, field, value) {
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.dataset.value = value;
+    chip.innerHTML = `${value}<span class="remove" onclick="this.parentElement.remove()">×</span>`;
+    container.insertBefore(chip, container.querySelector('input'));
+  }
+</script>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,66 @@
+{% extends "_layout.html" %}
+{% set active = "home" %}
+
+{% block title %}Pinpoint — {{ folderName }}{% endblock %}
+
+{% block content %}
+<div class="breadcrumbs">
+  <a href="/">Home</a>
+  {% for crumb in breadcrumbs %}
+    <span class="sep">/</span>
+    {% if loop.last %}
+      <span>{{ crumb.label }}</span>
+    {% else %}
+      <a href="/browse?path={{ crumb.path }}">{{ crumb.label }}</a>
+    {% endif %}
+  {% endfor %}
+</div>
+
+<div class="page-header">
+  <h2>{{ folderName }}</h2>
+  <div class="subtitle">{{ files | length }} file{{ 's' if files | length != 1 }}{% if subfolders | length %}, {{ subfolders | length }} subfolder{{ 's' if subfolders | length != 1 }}{% endif %}</div>
+</div>
+
+{% if subfolders | length > 0 %}
+<div class="folder-grid mb-2">
+  {% for sub in subfolders %}
+  <a href="/browse?path={{ sub.key }}" class="folder-card">
+    <div class="hero">
+      {% if sub.heroId %}
+        <img src="/preview/{{ sub.heroId }}" alt="" loading="lazy">
+      {% else %}
+        <span class="icon-placeholder">📁</span>
+      {% endif %}
+    </div>
+    <div class="info">
+      <div class="name">{{ sub.name }}</div>
+      <div class="meta">{{ sub.count }} file{{ 's' if sub.count != 1 }}</div>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if files | length > 0 %}
+<ul class="results-list">
+  {% for f in files %}
+  <li>
+    <a href="/files/{{ f.id }}" class="result-row">
+      <span class="r-icon">
+        {% if f.fileClass == 'image' %}🖼{% elif f.fileClass == 'video' %}🎬{% elif f.fileClass == 'audio' %}🎵{% else %}📄{% endif %}
+      </span>
+      <span class="r-name">{{ f.name }}</span>
+      {% if f.favorite %}<span class="r-star">★</span>{% endif %}
+    </a>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+{% if files | length == 0 and subfolders | length == 0 %}
+<div class="empty-state">
+  <div class="icon">📂</div>
+  <h3>Empty folder</h3>
+</div>
+{% endif %}
+{% endblock %}
