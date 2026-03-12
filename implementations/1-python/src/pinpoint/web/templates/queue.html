@@ -111,7 +111,37 @@
             {% endmacro %}
 
             {% for field_id, label in root_fields %}
-                {{ tag_field(field_id, label) }}
+                {% if field_id == 'person' %}
+                    {# Multi-value person field #}
+                    {% set ai_val = ai_defaults.get('person', '') %}
+                    <label>{{ label }}
+                        {% if ai_val %}<small class="source-ai">AI</small>{% endif %}
+                    </label>
+                    <div id="person-chips" class="tag-chips">
+                        {% if ai_val %}
+                        <span class="tag-chip" data-value="{{ ai_val }}">
+                            {{ ai_val }}
+                            <a href="#" class="tag-remove" onclick="removePersonChip(this); return false;">&times;</a>
+                            <input type="hidden" name="person" value="{{ ai_val }}">
+                        </span>
+                        {% endif %}
+                    </div>
+                    <div class="person-add" style="display:flex; gap:0.25rem;">
+                        <input type="text" id="person-input" placeholder="Add person..."
+                               class="tag-input" style="margin-bottom:0;"
+                               list="person-suggestions"
+                               onkeydown="if(event.key==='Enter'){event.preventDefault(); addPersonChip();}">
+                        <button type="button" class="outline secondary" style="white-space:nowrap; padding:0.35em 0.6em; margin-bottom:0;"
+                                onclick="addPersonChip()">+</button>
+                    </div>
+                    {% if ai_val %}
+                    <datalist id="person-suggestions">
+                        <option value="{{ ai_val }}">{{ ai_val }} (AI)</option>
+                    </datalist>
+                    {% endif %}
+                {% else %}
+                    {{ tag_field(field_id, label) }}
+                {% endif %}
             {% endfor %}
 
         </form>
@@ -198,6 +228,28 @@
             form.append('folder', '{{ source_folder }}');
             fetch('/api/queue/folder/accept', { method: 'POST', body: form })
                 .then(() => { window.location.href = '/queue' + filterQs; });
+        }
+        function addPersonChip() {
+            const input = document.getElementById('person-input');
+            const value = input.value.trim();
+            if (!value) return;
+            const chips = document.getElementById('person-chips');
+            // Check for duplicates
+            if ([...chips.querySelectorAll('[data-value]')].some(c => c.dataset.value === value)) {
+                input.value = '';
+                return;
+            }
+            const chip = document.createElement('span');
+            chip.className = 'tag-chip';
+            chip.dataset.value = value;
+            chip.innerHTML = value
+                + '<a href="#" class="tag-remove" onclick="removePersonChip(this); return false;">&times;</a>'
+                + '<input type="hidden" name="person" value="' + value.replace(/"/g, '&quot;') + '">';
+            chips.appendChild(chip);
+            input.value = '';
+        }
+        function removePersonChip(el) {
+            el.closest('.tag-chip').remove();
         }
         function applyFilter(key, value) {
             const params = new URLSearchParams(window.location.search);

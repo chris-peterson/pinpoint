@@ -149,6 +149,9 @@ ROOT_FIELDS: dict[str, list[tuple[str, str]]] = {
 # All known tag field IDs (union of all ROOT_FIELDS keys)
 ALL_TAG_FIELDS = tuple({field for fields in ROOT_FIELDS.values() for field, _ in fields})
 
+# Fields that support multiple values (e.g. multiple people in a photo)
+MULTI_VALUE_FIELDS = {"person"}
+
 
 def _parse_dt(value: str | None) -> datetime | None:
     if value is None:

@@ -11,7 +11,7 @@ from fastapi.templating import Jinja2Templates
 from pinpoint import database as db
 from pinpoint.analysis.suggestions import suggestions_as_defaults
 from pinpoint.defaults import defaults_from_source_split, extract_audio_metadata
-from pinpoint.models import File, ROOT_FIELDS
+from pinpoint.models import MULTI_VALUE_FIELDS, File, ROOT_FIELDS
 from pinpoint.paths import derive_path
 
 router = APIRouter(tags=["web"])
@@ -529,8 +529,9 @@ async def file_detail_page(file_id: int, request: Request):
 
     # Extract current values for root-specific fields
     root_fields = ROOT_FIELDS.get(file_data.root, [])
-    field_ids = {field_id for field_id, _ in root_fields}
+    field_ids = {fid for fid, _ in root_fields}
     tag_values: dict[str, str] = {}
+    person_values: list[str] = []
     extra_tags = []
     for tag in tags:
         tag_type = tag["type"]
@@ -538,7 +539,10 @@ async def file_detail_page(file_id: int, request: Request):
         prefix = f"{tag_type}:"
         value = tag_name[len(prefix):] if tag_name.startswith(prefix) else tag_name
         if tag_type in field_ids:
-            tag_values[tag_type] = value
+            if tag_type in MULTI_VALUE_FIELDS:
+                person_values.append(value)
+            else:
+                tag_values[tag_type] = value
         else:
             extra_tags.append(tag)
 
@@ -553,6 +557,7 @@ async def file_detail_page(file_id: int, request: Request):
         "tags": tags,
         "extra_tags": extra_tags,
         "tag_values": tag_values,
+        "person_values": person_values,
         "root_fields": root_fields,
         "pending_count": pending_count,
     })
