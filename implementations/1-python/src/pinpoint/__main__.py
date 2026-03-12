@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from pinpoint import database
+from pinpoint.analysis.worker import run_analysis
 from pinpoint.api import files, queue, tags
 from pinpoint.config import ConfigHolder, load_config
 from pinpoint.discovery import DiscoveryStatus, scan_input
@@ -81,9 +82,27 @@ async def lifespan(app: FastAPI):
 
     discovery_task = asyncio.create_task(run_discovery())
 
+    # Start analysis worker (processes files after discovery finds them)
+    analysis_task = None
+    if config.analysis.enabled:
+        async def run_analysis_worker():
+            # Let discovery get a head start
+            await asyncio.sleep(2)
+            logger.info("Starting background analysis worker...")
+            try:
+                await run_analysis(db, config.analysis)
+            except asyncio.CancelledError:
+                logger.info("Analysis worker stopped")
+            except Exception:
+                logger.exception("Analysis worker crashed")
+
+        analysis_task = asyncio.create_task(run_analysis_worker())
+
     yield
 
     # Shutdown
+    if analysis_task:
+        analysis_task.cancel()
     discovery_task.cancel()
     await db.close()
 

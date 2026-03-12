@@ -62,6 +62,55 @@ label {
     color: var(--pico-muted-color);
 }
 
+.tag-input.from-ai {
+    border-color: #7c5cbf;
+    color: var(--pico-color);
+}
+
+/* AI analysis badges */
+.analysis-badge {
+    font-weight: 400;
+    font-size: 0.7em;
+    padding: 0.1em 0.5em;
+    border-radius: 999px;
+    vertical-align: middle;
+    margin-left: 0.5em;
+}
+
+.analysis-badge.analyzing {
+    background: #f0e68c;
+    color: #333;
+}
+
+.analysis-badge.done {
+    background: #7c5cbf;
+    color: #fff;
+}
+
+.analysis-badge.pending {
+    background: var(--pico-secondary-focus);
+    color: var(--pico-muted-color);
+}
+
+/* Source labels on tag fields */
+.source-ai {
+    background: #7c5cbf;
+    color: #fff;
+    padding: 0.05em 0.4em;
+    border-radius: 4px;
+    font-size: 0.75em;
+    font-weight: 600;
+    vertical-align: middle;
+    margin-left: 0.3em;
+}
+
+.source-filename {
+    color: var(--pico-muted-color);
+    font-size: 0.75em;
+    font-weight: 400;
+    margin-left: 0.3em;
+}
+
 /* Queue layout */
 .preview-panel {
     text-align: center;

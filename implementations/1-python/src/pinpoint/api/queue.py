@@ -10,7 +10,8 @@ from fastapi import APIRouter, HTTPException, Request
 
 from pinpoint import database as db
 from pinpoint.actions import log_action
-from pinpoint.defaults import defaults_from_source
+from pinpoint.analysis.suggestions import suggestions_as_defaults
+from pinpoint.defaults import defaults_from_source_split
 from pinpoint.models import ALL_TAG_FIELDS, ActionVerb, File, FileStatus
 from pinpoint.paths import derive_path
 from pinpoint.tag_writer import write_tags
@@ -120,13 +121,17 @@ async def accept_folder(request: Request):
     for row in rows:
         file = File.from_row(row)
 
-        # Compute defaults
+        # Compute defaults (filename < AI < metadata)
         input_path = ""
         for inp in config.inputs:
             if file.source_path.startswith(str(inp.path)):
                 input_path = str(inp.path)
                 break
-        field_defaults = defaults_from_source(file.source_path, file.root, input_path)
+        filename_defs, metadata_defs = defaults_from_source_split(
+            file.source_path, file.root, input_path,
+        )
+        ai_defs = await suggestions_as_defaults(conn, file.id)
+        field_defaults = {**filename_defs, **ai_defs, **metadata_defs}
 
         # Build tags from defaults
         tag_fields = ALL_TAG_FIELDS
@@ -243,13 +248,16 @@ async def accept_file(file_id: int, request: Request):
     # Get form data (tag field values from the UI)
     form = await request.form()
 
-    # Compute defaults from source path
+    # Compute defaults from source path + AI suggestions
     input_path = ""
     for inp in config.inputs:
         if file.source_path.startswith(str(inp.path)):
             input_path = str(inp.path)
             break
-    field_defaults = defaults_from_source(file.source_path, file.root, input_path)
+    filename_defs, metadata_defs = defaults_from_source_split(file.source_path, file.root, input_path)
+    ai_defs = await suggestions_as_defaults(conn, file_id)
+    # Merge: filename < AI < metadata (metadata wins)
+    field_defaults = {**filename_defs, **ai_defs, **metadata_defs}
 
     # Build tags: form values override defaults
     tag_fields = ("event", "name", "artist", "album", "year", "track", "author", "title", "show", "season", "series")

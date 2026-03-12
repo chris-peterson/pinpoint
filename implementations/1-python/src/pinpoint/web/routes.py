@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.templating import Jinja2Templates
 
 from pinpoint import database as db
+from pinpoint.analysis.suggestions import suggestions_as_defaults
 from pinpoint.defaults import defaults_from_source_split, extract_audio_metadata
 from pinpoint.models import File, ROOT_FIELDS
 from pinpoint.paths import derive_path
@@ -105,6 +106,8 @@ async def queue_page(request: Request, root: str = "", file_class: str = ""):
     field_defaults: dict[str, str] = {}
     filename_defaults: dict[str, str] = {}
     metadata_defaults: dict[str, str] = {}
+    ai_defaults: dict[str, str] = {}
+    analysis_status = None
 
     if row:
         file_data = File.from_row(row)
@@ -127,7 +130,13 @@ async def queue_page(request: Request, root: str = "", file_class: str = ""):
         filename_defaults, metadata_defaults = defaults_from_source_split(
             file_data.source_path, file_data.root, input_path,
         )
-        field_defaults = {**filename_defaults, **metadata_defaults}
+
+        # Load AI suggestions as defaults (middle priority: filename < AI < metadata)
+        ai_defaults = await suggestions_as_defaults(conn, row["id"])
+        analysis_status = file_data.analysis_status
+
+        # Merge: filename < AI < metadata (metadata wins)
+        field_defaults = {**filename_defaults, **ai_defaults, **metadata_defaults}
 
         # Compute initial path preview using defaults
         tags: dict[str, list[str]] = {}
@@ -190,6 +199,8 @@ async def queue_page(request: Request, root: str = "", file_class: str = ""):
         "defaults": field_defaults,
         "filename_defaults": filename_defaults,
         "metadata_defaults": metadata_defaults,
+        "ai_defaults": ai_defaults,
+        "analysis_status": analysis_status,
         "source_folder": source_folder,
         "folder_count": folder_count,
         "folder_ready": folder_ready,
