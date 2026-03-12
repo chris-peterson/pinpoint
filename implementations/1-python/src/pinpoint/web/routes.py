@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
@@ -18,39 +19,154 @@ router = APIRouter(tags=["web"])
 templates_dir = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(templates_dir))
 
+# How to group managed files into folder cards per root
+_FOLDER_GROUPING: dict[str, list[str]] = {
+    "memories": ["event"],
+    "music": ["artist", "album"],
+    "books": ["author"],
+    "podcasts": ["show"],
+    "tv": ["show", "season"],
+    "movies": ["series"],
+    "comedy": ["artist"],
+}
+
 
 @router.get("/")
-async def home_page(request: Request, q: str = ""):
-    """Home page — search across all files."""
+async def home_page(request: Request, q: str = "", root: str = "", file_class: str = ""):
+    """Home page — search, browse folder cards, On This Day."""
     conn = request.app.state.db
 
-    # Stats for the home page
+    # Stats
     pending_row = await db.fetch_one(
         conn, "SELECT COUNT(*) as count FROM files WHERE status = 'pending' AND skipped_at IS NULL"
     )
     managed_row = await db.fetch_one(
         conn, "SELECT COUNT(*) as count FROM files WHERE status = 'managed'"
     )
+    missing_row = await db.fetch_one(
+        conn, "SELECT COUNT(*) as count FROM files WHERE status = 'missing'"
+    )
     pending_count = pending_row["count"] if pending_row else 0
     managed_count = managed_row["count"] if managed_row else 0
+    missing_count = missing_row["count"] if missing_row else 0
 
+    # Available roots/classes for filter dropdowns
+    root_rows = await db.fetch_all(
+        conn,
+        "SELECT DISTINCT root, COUNT(*) as cnt FROM files WHERE status = 'managed' GROUP BY root ORDER BY root",
+    )
+    class_rows = await db.fetch_all(
+        conn,
+        "SELECT DISTINCT file_class, COUNT(*) as cnt FROM files WHERE status = 'managed' GROUP BY file_class ORDER BY file_class",
+    )
+
+    # Search
     results = []
     if q:
-        # Search managed files by path and tags
         like_q = f"%{q}%"
         results = await db.fetch_all(
             conn,
-            """SELECT f.id, f.managed_path, f.source_path, f.root, f.file_class, f.status,
+            """SELECT f.id, f.managed_path, f.source_path, f.root, f.file_class,
+                      f.status, f.favorite,
                       GROUP_CONCAT(t.name, ', ') as tag_list
                FROM files f
                LEFT JOIN file_tags ft ON f.id = ft.file_id
                LEFT JOIN tags t ON ft.tag_id = t.id
-               WHERE (f.managed_path LIKE ? OR f.source_path LIKE ? OR t.name LIKE ?)
+               WHERE f.status IN ('managed', 'drifted')
+                 AND (f.managed_path LIKE ? OR f.source_path LIKE ? OR t.name LIKE ?)
                GROUP BY f.id
-               ORDER BY f.managed_date DESC, f.discovery_date DESC
+               ORDER BY f.favorite DESC, f.managed_date DESC
                LIMIT 50""",
             (like_q, like_q, like_q),
         )
+
+    # Folder cards (browse mode, no search query)
+    folders: list[dict] = []
+    if not q:
+        browse_filter = "status = 'managed'"
+        browse_params: list = []
+        if root:
+            browse_filter += " AND root = ?"
+            browse_params.append(root)
+        if file_class:
+            browse_filter += " AND file_class = ?"
+            browse_params.append(file_class)
+
+        managed_files = await db.fetch_all(
+            conn,
+            f"""SELECT f.id, f.managed_path, f.root, f.file_class, f.favorite,
+                       GROUP_CONCAT(t.name, ', ') as tag_list
+                FROM files f
+                LEFT JOIN file_tags ft ON f.id = ft.file_id
+                LEFT JOIN tags t ON ft.tag_id = t.id
+                WHERE {browse_filter}
+                GROUP BY f.id
+                ORDER BY f.managed_date DESC""",
+            tuple(browse_params),
+        )
+
+        config = request.app.state.config_holder.config
+        output_prefix = str(config.output)
+        seen_folders: dict[str, dict] = {}
+
+        for row in managed_files:
+            managed = row["managed_path"] or ""
+            file_root = row["root"]
+            grouping_keys = _FOLDER_GROUPING.get(file_root, [])
+
+            # Strip output prefix for display
+            if managed.startswith(output_prefix):
+                relative = managed[len(output_prefix):].lstrip("/")
+            else:
+                relative = managed
+            parts = relative.split("/")
+
+            # Determine folder depth from grouping keys (+1 for root dir)
+            depth = len(grouping_keys) + 1  # e.g. music/artist/album = 3
+            folder_parts = parts[:depth] if len(parts) > depth else parts[:-1]
+            folder_key = "/".join(folder_parts) if folder_parts else file_root
+
+            if folder_key not in seen_folders:
+                seen_folders[folder_key] = {
+                    "key": folder_key,
+                    "label": folder_parts[-1] if folder_parts else file_root,
+                    "root": file_root,
+                    "count": 0,
+                    "hero_id": None,
+                    "has_images": False,
+                }
+            card = seen_folders[folder_key]
+            card["count"] += 1
+
+            # Pick hero image (first image file in folder)
+            if not card["hero_id"] and row["file_class"] == "image":
+                card["hero_id"] = row["id"]
+                card["has_images"] = True
+
+        folders = sorted(seen_folders.values(), key=lambda c: c["key"])
+
+    # On This Day — memories from today's month+day in previous years
+    today = date.today()
+    on_this_day = []
+    otd_rows = await db.fetch_all(
+        conn,
+        """SELECT id, managed_path, file_class, creation_date
+           FROM files
+           WHERE status = 'managed' AND root = 'memories'
+             AND strftime('%m-%d', creation_date) = ?
+           ORDER BY creation_date ASC
+           LIMIT 20""",
+        (today.strftime("%m-%d"),),
+    )
+    for row in otd_rows:
+        cd = row["creation_date"] or ""
+        year = cd[:4] if len(cd) >= 4 else "?"
+        on_this_day.append({
+            "id": row["id"],
+            "file_class": row["file_class"],
+            "year": year,
+            "path": row["managed_path"] or "",
+        })
 
     return templates.TemplateResponse("home.html", {
         "request": request,
@@ -58,6 +174,13 @@ async def home_page(request: Request, q: str = ""):
         "results": results,
         "pending_count": pending_count,
         "managed_count": managed_count,
+        "missing_count": missing_count,
+        "folders": folders,
+        "on_this_day": on_this_day,
+        "filter_root": root,
+        "filter_class": file_class,
+        "available_roots": root_rows,
+        "available_classes": class_rows,
     })
 
 

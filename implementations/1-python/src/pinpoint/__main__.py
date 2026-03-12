@@ -18,6 +18,7 @@ from pinpoint.analysis.worker import run_analysis
 from pinpoint.api import files, queue, tags
 from pinpoint.config import ConfigHolder, load_config
 from pinpoint.discovery import DiscoveryStatus, scan_input
+from pinpoint.monitoring import verify_managed_files, watch_output
 from pinpoint.web import routes
 
 logging.basicConfig(
@@ -98,9 +99,16 @@ async def lifespan(app: FastAPI):
 
         analysis_task = asyncio.create_task(run_analysis_worker())
 
+    # Verify managed files exist at expected paths [OM periodic]
+    await verify_managed_files(db)
+
+    # Start output directory watcher [OM-1 through OM-7]
+    watcher_task = asyncio.create_task(watch_output(db, config.output))
+
     yield
 
     # Shutdown
+    watcher_task.cancel()
     if analysis_task:
         analysis_task.cancel()
     discovery_task.cancel()
