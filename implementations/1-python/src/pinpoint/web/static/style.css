@@ -513,3 +513,17 @@ label {
     color: var(--pico-muted-color);
     font-size: 0.75em;
 }
+
+/* Browse breadcrumb */
+.browse-breadcrumb {
+    font-size: 0.85em;
+    margin-bottom: 0.5rem;
+}
+
+.browse-breadcrumb a {
+    text-decoration: none;
+}
+
+.browse-breadcrumb a:hover {
+    text-decoration: underline;
+}

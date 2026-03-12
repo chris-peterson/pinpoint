@@ -4,9 +4,17 @@
 {% block content %}
 <form action="/" method="get" role="search">
     <input type="search" name="q" value="{{ q }}" placeholder="Search files, paths, tags..."
-           autofocus autocomplete="off">
+           autofocus autocomplete="off"
+           hx-get="/api/search"
+           hx-trigger="input changed delay:300ms, search"
+           hx-target="#search-results"
+           hx-swap="innerHTML"
+           hx-params="q"
+           hx-indicator="#search-spinner">
+    <span id="search-spinner" class="htmx-indicator" aria-busy="true" style="display:none;"></span>
 </form>
 
+<div id="search-results">
 {% if not q %}
 <div class="home-stats">
     {% if pending_count > 0 %}
@@ -80,7 +88,7 @@
     {% if folders %}
     <div class="folder-grid">
         {% for folder in folders %}
-        <a href="/library#{{ folder.key }}" class="folder-card">
+        <a href="/browse/{{ folder.key }}" class="folder-card">
             {% if folder.hero_id %}
             <div class="folder-hero">
                 <img src="/api/files/{{ folder.hero_id }}/content" alt="" loading="lazy">
@@ -119,39 +127,7 @@ function applyHomeFilter(key, value) {
 {% endif %}
 
 {% if q %}
-<p class="search-meta">{{ results | length }} result{{ "s" if results | length != 1 }} for "{{ q }}"</p>
-
-{% if results %}
-<table class="search-results">
-    <thead>
-        <tr>
-            <th>File</th>
-            <th>Root</th>
-            <th>Type</th>
-            <th>Tags</th>
-        </tr>
-    </thead>
-    <tbody>
-        {% for row in results %}
-        <tr>
-            <td>
-                {% set display_path = row.managed_path or row.source_path %}
-                <a href="/file/{{ row.id }}">
-                    {% if row.favorite %}&#9733; {% endif %}{{ display_path | basename }}
-                </a>
-                <br><small>{{ display_path }}</small>
-            </td>
-            <td><code>{{ row.root }}</code></td>
-            <td>{{ row.file_class }}</td>
-            <td><small>{{ row.tag_list or '' }}</small></td>
-        </tr>
-        {% endfor %}
-    </tbody>
-</table>
-{% else %}
-<article>
-    <p>No files match "{{ q }}".</p>
-</article>
+{% include "_search_results.html" %}
 {% endif %}
-{% endif %}
+</div>{# end #search-results #}
 {% endblock %}

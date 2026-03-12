@@ -338,6 +338,124 @@ async def queue_page(request: Request, root: str = "", file_class: str = ""):
     })
 
 
+@router.get("/api/search")
+async def search_api(request: Request, q: str = ""):
+    """Live search — returns HTML fragment for HTMX swap."""
+    conn = request.app.state.db
+
+    if len(q) < 2:
+        return templates.TemplateResponse("_search_results.html", {
+            "request": request, "results": [], "q": q,
+        })
+
+    like_q = f"%{q}%"
+    results = await db.fetch_all(
+        conn,
+        """SELECT f.id, f.managed_path, f.source_path, f.root, f.file_class,
+                  f.status, f.favorite,
+                  GROUP_CONCAT(t.name, ', ') as tag_list
+           FROM files f
+           LEFT JOIN file_tags ft ON f.id = ft.file_id
+           LEFT JOIN tags t ON ft.tag_id = t.id
+           WHERE f.status IN ('managed', 'drifted')
+             AND (f.managed_path LIKE ? OR f.source_path LIKE ? OR t.name LIKE ?)
+           GROUP BY f.id
+           ORDER BY f.favorite DESC, f.managed_date DESC
+           LIMIT 50""",
+        (like_q, like_q, like_q),
+    )
+
+    return templates.TemplateResponse("_search_results.html", {
+        "request": request, "results": results, "q": q,
+    })
+
+
+@router.get("/browse/{folder_path:path}")
+async def browse_folder(folder_path: str, request: Request):
+    """Browse a specific folder — shows files in that managed folder."""
+    conn = request.app.state.db
+    config = request.app.state.config_holder.config
+    output_prefix = str(config.output)
+
+    # Find files whose managed_path starts with this folder
+    search_prefix = str(config.output / folder_path) + "/"
+    rows = await db.fetch_all(
+        conn,
+        """SELECT f.id, f.managed_path, f.file_class, f.favorite, f.root,
+                  GROUP_CONCAT(t.name, ', ') as tag_list
+           FROM files f
+           LEFT JOIN file_tags ft ON f.id = ft.file_id
+           LEFT JOIN tags t ON ft.tag_id = t.id
+           WHERE f.status = 'managed' AND f.managed_path LIKE ?
+           GROUP BY f.id
+           ORDER BY f.managed_path ASC""",
+        (search_prefix + "%",),
+    )
+
+    # Separate into direct children and subfolders
+    files = []
+    subfolders: dict[str, dict] = {}
+    for row in rows:
+        managed = row["managed_path"] or ""
+        if managed.startswith(output_prefix):
+            relative = managed[len(output_prefix):].lstrip("/")
+        else:
+            relative = managed
+
+        # Path relative to the browsed folder
+        if relative.startswith(folder_path + "/"):
+            inner = relative[len(folder_path) + 1:]
+        else:
+            inner = relative
+
+        parts = inner.split("/")
+        if len(parts) == 1:
+            # Direct child file
+            files.append({
+                "id": row["id"],
+                "name": parts[0],
+                "file_class": row["file_class"],
+                "favorite": row["favorite"],
+                "tag_list": row["tag_list"] or "",
+            })
+        else:
+            # In a subfolder
+            subfolder_name = parts[0]
+            subfolder_key = folder_path + "/" + subfolder_name
+            if subfolder_name not in subfolders:
+                subfolders[subfolder_name] = {
+                    "name": subfolder_name,
+                    "key": subfolder_key,
+                    "count": 0,
+                    "hero_id": None,
+                }
+            subfolders[subfolder_name]["count"] += 1
+            if not subfolders[subfolder_name]["hero_id"] and row["file_class"] == "image":
+                subfolders[subfolder_name]["hero_id"] = row["id"]
+
+    pending_row = await db.fetch_one(
+        conn, "SELECT COUNT(*) as count FROM files WHERE status = 'pending' AND skipped_at IS NULL"
+    )
+    pending_count = pending_row["count"] if pending_row else 0
+
+    # Breadcrumb parts
+    breadcrumbs = []
+    accumulated = ""
+    for part in folder_path.split("/"):
+        accumulated = accumulated + "/" + part if accumulated else part
+        breadcrumbs.append({"label": part, "path": accumulated})
+
+    return templates.TemplateResponse("browse.html", {
+        "request": request,
+        "folder_path": folder_path,
+        "folder_name": folder_path.split("/")[-1],
+        "breadcrumbs": breadcrumbs,
+        "files": files,
+        "subfolders": sorted(subfolders.values(), key=lambda s: s["name"]),
+        "pending_count": pending_count,
+    })
+
+
 @router.get("/library")
 async def library_page(request: Request):
     """Library page — tree view of managed files."""
