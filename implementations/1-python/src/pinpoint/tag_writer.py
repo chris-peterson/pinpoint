@@ -216,22 +216,32 @@ def _write_xattrs(
 
     # Write Finder tags on macOS [TP-6]
     if sys.platform == "darwin":
-        writes.extend(_write_finder_tags(file_path, root))
+        writes.extend(_write_finder_tags(file_path, tags, root))
 
     return writes
 
 
+# Tags promoted to Finder tags — must be low-cardinality (dozens, not thousands).
+# Person is included because most users tag a small set of known people, and
+# Spotlight queries like "find pictures of Eva" are a key workflow.
+FINDER_TAG_FIELDS = {"person"}
+
+
 def _write_finder_tags(
-    file_path: Path, root: str,
+    file_path: Path, tags: dict[str, str], root: str,
 ) -> list[tuple[str, str, str]]:
     """Write low-cardinality Finder tags for Spotlight filtering. [TP-6]
 
-    Only writes categorical tags (root, file class) — not per-file values like
-    artist or person, which would create thousands of unique Finder tags and
-    degrade Spotlight performance. Detailed tags are in xattrs instead.
+    Writes categorical tags (root) plus select low-cardinality fields like
+    person. High-cardinality values (artist, album, event) stay in xattrs only
+    to avoid degrading Spotlight indexing.
     """
     writes: list[tuple[str, str, str]] = []
     finder_tags = ["pinpoint", f"pinpoint:{root}"]
+
+    for field, value in tags.items():
+        if field in FINDER_TAG_FIELDS and value:
+            finder_tags.append(f"{field}:{value}")
 
     try:
         plist_data = plistlib.dumps(finder_tags, fmt=plistlib.FMT_BINARY)
