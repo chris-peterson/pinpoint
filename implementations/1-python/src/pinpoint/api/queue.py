@@ -10,8 +10,9 @@ from fastapi import APIRouter, HTTPException, Request
 
 from pinpoint import database as db
 from pinpoint.actions import log_action
-from pinpoint.defaults import defaults_from_source
-from pinpoint.models import ALL_TAG_FIELDS, ActionVerb, File, FileStatus
+from pinpoint.analysis.suggestions import suggestions_as_defaults
+from pinpoint.defaults import defaults_from_source_split
+from pinpoint.models import ALL_TAG_FIELDS, MULTI_VALUE_FIELDS, ActionVerb, File, FileStatus
 from pinpoint.paths import derive_path
 from pinpoint.tag_writer import write_tags
 
@@ -120,13 +121,17 @@ async def accept_folder(request: Request):
     for row in rows:
         file = File.from_row(row)
 
-        # Compute defaults
+        # Compute defaults (filename < AI < metadata)
         input_path = ""
         for inp in config.inputs:
             if file.source_path.startswith(str(inp.path)):
                 input_path = str(inp.path)
                 break
-        field_defaults = defaults_from_source(file.source_path, file.root, input_path)
+        filename_defs, metadata_defs = defaults_from_source_split(
+            file.source_path, file.root, input_path,
+        )
+        ai_defs = await suggestions_as_defaults(conn, file.id)
+        field_defaults = {**filename_defs, **ai_defs, **metadata_defs}
 
         # Build tags from defaults
         tag_fields = ALL_TAG_FIELDS
@@ -243,42 +248,51 @@ async def accept_file(file_id: int, request: Request):
     # Get form data (tag field values from the UI)
     form = await request.form()
 
-    # Compute defaults from source path
+    # Compute defaults from source path + AI suggestions
     input_path = ""
     for inp in config.inputs:
         if file.source_path.startswith(str(inp.path)):
             input_path = str(inp.path)
             break
-    field_defaults = defaults_from_source(file.source_path, file.root, input_path)
+    filename_defs, metadata_defs = defaults_from_source_split(file.source_path, file.root, input_path)
+    ai_defs = await suggestions_as_defaults(conn, file_id)
+    # Merge: filename < AI < metadata (metadata wins)
+    field_defaults = {**filename_defs, **ai_defs, **metadata_defs}
 
     # Build tags: form values override defaults
-    tag_fields = ("event", "name", "artist", "album", "year", "track", "author", "title", "show", "season", "series")
     tags: dict[str, list[str]] = {}
-    for field in tag_fields:
-        value = form.get(field, "").strip() if field in form else ""
-        if not value:
-            value = field_defaults.get(field, "")
-        if value:
-            tags[field] = [value]
-            # Derived attributes (year, month, class) are used for path derivation
-            # but never persisted as tags — they're computed from file properties.
+    for field in ALL_TAG_FIELDS:
+        if field in MULTI_VALUE_FIELDS:
+            # Multi-value fields: collect all form values for this field
+            values = [v.strip() for v in form.getlist(field) if v.strip()]
+            if not values:
+                default = field_defaults.get(field, "")
+                values = [default] if default else []
+        else:
+            value = form.get(field, "").strip() if field in form else ""
+            if not value:
+                value = field_defaults.get(field, "")
+            values = [value] if value else []
+
+        if values:
+            tags[field] = values
             if field in DERIVED_ATTRIBUTES:
                 continue
-            # Persist the tag to the database
-            tag_name = f"{field}:{value}"
-            existing = await db.fetch_one(conn, "SELECT id FROM tags WHERE name = ?", (tag_name,))
-            if existing:
-                tag_id = existing["id"]
-            else:
-                cursor = await conn.execute(
-                    "INSERT INTO tags (name, type) VALUES (?, ?)",
-                    (tag_name, field),
+            for val in values:
+                tag_name = f"{field}:{val}"
+                existing = await db.fetch_one(conn, "SELECT id FROM tags WHERE name = ?", (tag_name,))
+                if existing:
+                    tag_id = existing["id"]
+                else:
+                    cursor = await conn.execute(
+                        "INSERT INTO tags (name, type) VALUES (?, ?)",
+                        (tag_name, field),
+                    )
+                    tag_id = cursor.lastrowid
+                await conn.execute(
+                    "INSERT OR IGNORE INTO file_tags (file_id, tag_id) VALUES (?, ?)",
+                    (file_id, tag_id),
                 )
-                tag_id = cursor.lastrowid
-            await conn.execute(
-                "INSERT OR IGNORE INTO file_tags (file_id, tag_id) VALUES (?, ?)",
-                (file_id, tag_id),
-            )
 
     await conn.commit()
 

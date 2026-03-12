@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}{{ folder_name }} — Pinpoint{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="browse-breadcrumb">
+    <a href="/">Home</a>
+    {% for bc in breadcrumbs %}
+    / <a href="/browse/{{ bc.path }}">{{ bc.label }}</a>
+    {% endfor %}
+</nav>
+
+<h3>{{ folder_name }}
+    <a href="#" class="reveal-link" style="opacity:1;"
+       onclick="revealFolder('{{ folder_path }}'); return false;"
+       title="Open in Finder">&#128194;</a>
+</h3>
+
+{% if subfolders %}
+<div class="folder-grid">
+    {% for sf in subfolders %}
+    <div class="folder-card-wrap">
+        <a href="/browse/{{ sf.key }}" class="folder-card">
+            {% if sf.hero_id %}
+            <div class="folder-hero">
+                <img src="/api/files/{{ sf.hero_id }}/content" alt="" loading="lazy">
+            </div>
+            {% else %}
+            <div class="folder-hero folder-hero-empty">
+                <span class="folder-icon">&#128193;</span>
+            </div>
+            {% endif %}
+            <div class="folder-info">
+                <strong>{{ sf.name }}</strong>
+                <small>{{ sf.count }} file{{ "s" if sf.count != 1 }}
+                    <a href="#" class="reveal-link" style="opacity:1;"
+                       onclick="event.preventDefault(); event.stopPropagation(); revealFolder('{{ sf.key }}');"
+                       title="Open in Finder">&#128194;</a>
+                </small>
+            </div>
+        </a>
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+{% if files %}
+{% if subfolders %}<hr>{% endif %}
+<table class="search-results">
+    <thead>
+        <tr>
+            <th></th>
+            <th>File</th>
+            <th>Type</th>
+            <th>Tags</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for f in files %}
+        <tr>
+            <td style="width:50px;">
+                {% if f.file_class == "image" %}
+                <img src="/api/files/{{ f.id }}/content" alt="" loading="lazy"
+                     style="width:40px; height:40px; object-fit:cover; border-radius:4px;">
+                {% endif %}
+            </td>
+            <td>
+                <a href="/file/{{ f.id }}">
+                    {% if f.favorite %}&#9733; {% endif %}{{ f.name }}
+                </a>
+            </td>
+            <td>{{ f.file_class }}</td>
+            <td><small>{{ f.tag_list }}</small></td>
+            <td>
+                <a href="#" class="reveal-link" style="opacity:1;"
+                   onclick="fetch('/api/files/{{ f.id }}/reveal', {method:'POST'}); return false;"
+                   title="Show in Finder">&#128269;</a>
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+
+{% if not files and not subfolders %}
+<article>
+    <p>This folder is empty.</p>
+</article>
+{% endif %}
+
+<script>
+function revealFolder(path) {
+    const form = new FormData();
+    form.append('path', path);
+    fetch('/api/files/reveal-folder', { method: 'POST', body: form });
+}
+</script>
+{% endblock %}

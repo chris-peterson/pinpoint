@@ -49,13 +49,33 @@
 
         <form id="tag-form">
             {% for field_id, label in root_fields %}
-                {% set current_val = tag_values.get(field_id, '') %}
-                <label for="{{ field_id }}">{{ label }}</label>
-                <input type="text" id="{{ field_id }}" name="{{ field_id }}"
-                    value="{{ current_val }}"
-                    class="tag-input"
-                    list="{{ field_id }}-suggestions">
-                <datalist id="{{ field_id }}-suggestions"></datalist>
+                {% if field_id == 'person' %}
+                    <label>{{ label }}</label>
+                    <div id="person-chips" class="tag-chips">
+                        {% for pv in person_values %}
+                        <span class="tag-chip" data-value="{{ pv }}">
+                            {{ pv }}
+                            <a href="#" class="tag-remove" onclick="removePersonChip(this); return false;">&times;</a>
+                            <input type="hidden" name="person" value="{{ pv }}">
+                        </span>
+                        {% endfor %}
+                    </div>
+                    <div class="person-add" style="display:flex; gap:0.25rem;">
+                        <input type="text" id="person-input" placeholder="Add person..."
+                               class="tag-input" style="margin-bottom:0;"
+                               onkeydown="if(event.key==='Enter'){event.preventDefault(); addPersonChip();}">
+                        <button type="button" class="outline secondary" style="white-space:nowrap; padding:0.35em 0.6em; margin-bottom:0;"
+                                onclick="addPersonChip()">+</button>
+                    </div>
+                {% else %}
+                    {% set current_val = tag_values.get(field_id, '') %}
+                    <label for="{{ field_id }}">{{ label }}</label>
+                    <input type="text" id="{{ field_id }}" name="{{ field_id }}"
+                        value="{{ current_val }}"
+                        class="tag-input"
+                        list="{{ field_id }}-suggestions">
+                    <datalist id="{{ field_id }}-suggestions"></datalist>
+                {% endif %}
             {% endfor %}
 
         </form>
@@ -72,6 +92,27 @@
         </div>
 
         <script>
+        function addPersonChip() {
+            const input = document.getElementById('person-input');
+            const value = input.value.trim();
+            if (!value) return;
+            const chips = document.getElementById('person-chips');
+            if ([...chips.querySelectorAll('[data-value]')].some(c => c.dataset.value === value)) {
+                input.value = '';
+                return;
+            }
+            const chip = document.createElement('span');
+            chip.className = 'tag-chip';
+            chip.dataset.value = value;
+            chip.innerHTML = value
+                + '<a href="#" class="tag-remove" onclick="removePersonChip(this); return false;">&times;</a>'
+                + '<input type="hidden" name="person" value="' + value.replace(/"/g, '&quot;') + '">';
+            chips.appendChild(chip);
+            input.value = '';
+        }
+        function removePersonChip(el) {
+            el.closest('.tag-chip').remove();
+        }
         function saveTags(fileId) {
             const form = document.getElementById('tag-form');
             const formData = new FormData(form);

@@ -193,13 +193,26 @@ def _write_xattrs(
 ) -> list[tuple[str, str, str]]:
     """Write extended attributes for format-agnostic tags. [TP-2, TP-6, TP-8]"""
     writes: list[tuple[str, str, str]] = []
+    path_str = str(file_path)
 
     # Always write root as xattr
     try:
-        _setxattr(str(file_path), "user.pinpoint.root", root.encode("utf-8"))
+        _setxattr(path_str, "user.pinpoint.root", root.encode("utf-8"))
         writes.append(("root", root, "xattr"))
     except (OSError, subprocess.CalledProcessError):
         logger.warning("Failed to write xattr root to %s", file_path, exc_info=True)
+
+    # Write each tag as an individual xattr for queryability [TP-2]
+    for field, value in tags.items():
+        if field in COMPUTED_TAGS or field in PATH_DERIVED_TAGS:
+            continue
+        if not value:
+            continue
+        try:
+            _setxattr(path_str, f"user.pinpoint.{field}", value.encode("utf-8"))
+            writes.append((field, value, "xattr"))
+        except (OSError, subprocess.CalledProcessError):
+            logger.debug("Failed to write xattr %s to %s", field, file_path)
 
     # Write Finder tags on macOS [TP-6]
     if sys.platform == "darwin":
@@ -208,22 +221,29 @@ def _write_xattrs(
     return writes
 
 
+# Tags promoted to Finder tags — must be low-cardinality (dozens, not thousands).
+# Person is included because most users tag a small set of known people, and
+# Spotlight queries like "find pictures of Eva" are a key workflow.
+FINDER_TAG_FIELDS = {"person"}
+
+
 def _write_finder_tags(
     file_path: Path, tags: dict[str, str], root: str,
 ) -> list[tuple[str, str, str]]:
-    """Mirror tags to macOS Finder tags (com.apple.metadata:_kMDItemUserTags). [TP-6]"""
-    writes: list[tuple[str, str, str]] = []
+    """Write low-cardinality Finder tags for Spotlight filtering. [TP-6]
 
-    # Build Finder tag list — root + any path-relevant tags with values
-    finder_tags = [f"pinpoint:{root}"]
+    Writes categorical tags (root) plus select low-cardinality fields like
+    person. High-cardinality values (artist, album, event) stay in xattrs only
+    to avoid degrading Spotlight indexing.
+    """
+    writes: list[tuple[str, str, str]] = []
+    finder_tags = ["pinpoint", f"pinpoint:{root}"]
+
     for field, value in tags.items():
-        if field in COMPUTED_TAGS or field in PATH_DERIVED_TAGS:
-            continue
-        if value:
+        if field in FINDER_TAG_FIELDS and value:
             finder_tags.append(f"{field}:{value}")
 
     try:
-        # Finder tags are stored as a plist-encoded array
         plist_data = plistlib.dumps(finder_tags, fmt=plistlib.FMT_BINARY)
         _setxattr_bytes(
             str(file_path),

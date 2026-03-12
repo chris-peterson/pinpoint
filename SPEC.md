@@ -221,7 +221,9 @@ event:Birthday Party:Cake Cutting
 
 #### `person:` — Memory only
 
-Who is in the photo or video. Maps to face recognition embeddings. A file can have multiple `person:` tags. Not path-relevant.
+Who is in the photo or video. Maps to face recognition embeddings. Not path-relevant.
+
+- **[TX-1]** A file can have multiple `person:` tags. The UI must support multi-value entry (e.g., chip-based input with add/remove) in both the queue and file detail views.
 
 ```
 person:Eva
@@ -676,6 +678,7 @@ The home page. The default landing experience is searching and browsing the mana
 ### Search
 
 - **[LB-1]** Full-text search bar at the top of the home page. Searches across filenames, tag values, metadata, and AI descriptions.
+- **[LB-1a]** Search is **predictive**: results auto-update after the user types 2 or more characters, with a short debounce delay (~300ms). No submit button required — typing is the trigger.
 - **[LB-2]** Results displayed as a grid of **folders** (see below) and individual files.
 - **[LB-3]** Filters narrow results:
   - Root (memories, music, tv, etc.).
@@ -689,6 +692,7 @@ The home page. The default landing experience is searching and browsing the mana
 A **folder** is a virtual grouping of managed files, derived from the primary grouping segment of each root's path formula. Each folder has a **name** and a **hero image**.
 
 - **[LB-4]** Folders are the primary browsing unit. The home page shows folders as cards (hero image + name).
+- **[LB-4a]** Clicking a folder card **drills down** into that folder, showing its subfolders and files. Folder browsing is hierarchical with breadcrumb navigation — it does not jump to a flat library view.
 - **[LB-5]** The hero image is the first image file in the folder (by date), or the stack cover if one exists. Falls back to a file-type icon when no image is available.
 
 | Root | Folder level | Example folder name |
@@ -706,6 +710,7 @@ A **folder** is a virtual grouping of managed files, derived from the primary gr
   - Audio: play icon (&#9654;) — click to play inline.
   - Images: image icon — click to open/preview.
   - Video: film icon — click to open/preview.
+- **[LB-8]** Browse views offer **"Open in Finder"** (macOS) / **"Open in file manager"** actions at every level: folder cards, subfolder headings, and individual files. This bridges the Pinpoint UI with the native filesystem.
 - Favorites marked with a star indicator. Favorites sort first.
 
 ### On This Day
@@ -857,9 +862,12 @@ Pinpoint never invents its own metadata format. Every tag is stored using an exi
 
 ### Extended attributes
 
-- **[TP-6]** On macOS, additionally mirror tags to `com.apple.metadata:_kMDItemUserTags` so they appear as Finder tags.
+- **[TP-6]** On macOS, mirror **low-cardinality** tags to `com.apple.metadata:_kMDItemUserTags` so they appear as Finder tags and are indexed by Spotlight. High-cardinality values stay in xattrs only to avoid degrading Spotlight indexing performance.
+  - **[TP-6a]** Always written: `pinpoint` (app identifier) and `pinpoint:<root>` (category).
+  - **[TP-6b]** Promoted fields: `person` — included because most users tag a small set of known people (dozens, not thousands), and Spotlight queries like "find pictures of Eva" are a key workflow.
+  - **[TP-6c]** Not promoted: `artist`, `album`, `event`, `author`, `show`, and other high-cardinality fields. These are queryable via individual xattrs (`user.pinpoint.<field>`) but not written as Finder tags.
 - **[TP-7]** On discovery, import existing Finder tags / xattrs as suggestions.
-- **[TP-8]** On Linux, uses the `user.*` xattr namespace. On macOS, uses both `user.pinpoint.*` and the Finder tag namespace.
+- **[TP-8]** On Linux, uses the `user.*` xattr namespace. On macOS, uses both `user.pinpoint.*` and the Finder tag namespace. Each tag is written as an individual xattr (`user.pinpoint.<field>`) for per-file queryability regardless of platform.
 
 ### Database rebuild
 

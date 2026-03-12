@@ -18,7 +18,7 @@ Maps SPEC.md requirement IDs to implementation status and code locations.
 | [CM-2] | Single output directory, path from tags | Done | `config.py`, `paths.py` |
 | [CM-3] | Pending: known, original untouched | Done | `discovery.py` |
 | [CM-4] | Managed: accepted, moved to output | Done | `api/queue.py:accept_file` |
-| [CM-5] | Files are source of truth (tags in native metadata) | N/S | |
+| [CM-5] | Files are source of truth (tags in native metadata) | Partial | `tag_writer.py` writes on accept; rebuild not implemented |
 
 ## §2 Tag Taxonomy
 
@@ -45,7 +45,7 @@ Maps SPEC.md requirement IDs to implementation status and code locations.
 | [OP-8] | `_unknown` for missing path segments | Done | `paths.py:_first_or` |
 | [OP-9] | Collision suffixes (`-1`, `-2`) | Done | `api/queue.py:_resolve_collision` |
 | [OP-10] | Stack dissolve removes suffix | N/S | |
-| [OP-11] | Tag change triggers relocation | N/S | |
+| [OP-11] | Tag change triggers relocation | Done | `api/tags.py:save_tags` — relocates + cleans empty dirs |
 
 ## §4 Migration Queue
 
@@ -75,12 +75,18 @@ Maps SPEC.md requirement IDs to implementation status and code locations.
 | [AI-1] | Read embedded audio tags | Done | `defaults.py:extract_audio_metadata` |
 | [AI-2] | Extract title, artist, album, year, track | Done | `defaults.py:extract_audio_metadata` |
 | [AI-3] | Skip album art images during discovery | Done | `discovery.py:_walk_files` |
+| [AI-4] | Background worker processes pending files | Done | `analysis/worker.py:run_analysis` |
+| [AI-5] | TMDb lookup for movies/TV/comedy | Done | `analysis/tmdb.py` — filename parsing + API search |
+| [AI-6] | Vision LLM for images (Ollama) | Done | `analysis/vision.py` — downscale + LLaVA |
+| [AI-7] | Suggestions stored with confidence scores | Done | `analysis/suggestions.py`, `schema.sql:suggestions` |
+| [AI-8] | Suggestions shown in queue UI | Done | `web/routes.py`, `templates/queue.html` — AI badge + source labels |
+| [AI-9] | Graceful degradation (no Ollama/TMDb = skip) | Done | `analysis/worker.py` — checks availability at startup |
 
 ## §7 Search & Browsing (Home Page)
 
 | ID | Requirement | Status | Code |
 |---|---|---|---|
-| [LB-1] | Full-text search bar on home page | N/S | FTS5 in schema, not wired |
+| [LB-1] | Full-text search bar on home page | Partial | FTS5 in schema, LIKE search wired, FTS not wired |
 | [LB-2] | Results as folder cards + individual files | N/S | |
 | [LB-3] | Filters (root, class, date, person/artist, tags) | Partial | Root + class filters on queue |
 | [LB-4] | Folders as primary browsing unit (hero image + name) | N/S | |
@@ -102,7 +108,7 @@ Maps SPEC.md requirement IDs to implementation status and code locations.
 | ID | Requirement | Status | Code |
 |---|---|---|---|
 | [FD-1] | Full-size preview overlay | N/S | |
-| [FD-2] | Editable tags sidebar | N/S | |
+| [FD-2] | Editable tags sidebar | Partial | `web/routes.py:file_detail_page`, `templates/file_detail.html` — tag editor exists |
 
 ## §10 Data Model
 
@@ -110,13 +116,13 @@ Maps SPEC.md requirement IDs to implementation status and code locations.
 |---|---|---|---|
 | [DM-1] | Append-only action log | Done | `actions.py:log_action`, all 17 verbs in `models.py` |
 | [DM-2] | files, tags, file_tags tables | Done | `schema.sql`, `database.py` |
-| [DM-3] | suggestions, stacks, known_faces | Done | Schema only, no logic |
+| [DM-3] | suggestions, stacks, known_faces | Done | Schema + suggestions logic implemented |
 
 ## §11 Output Monitoring
 
 | ID | Requirement | Status | Code |
 |---|---|---|---|
-| [OM-1] | Detect rename via watcher | N/S | |
+| [OM-1] | Detect rename via watcher | N/S | watchfiles dep included, not wired |
 | [OM-2] | Update managed_path on rename | N/S | |
 | [OM-3] | Log rename action | N/S | |
 | [OM-4] | Tags remain source of truth (no reverse-derive) | N/S | |
@@ -128,14 +134,14 @@ Maps SPEC.md requirement IDs to implementation status and code locations.
 
 | ID | Requirement | Status | Code |
 |---|---|---|---|
-| [TP-1] | Write tags to native metadata fields | N/S | |
-| [TP-2] | Format-agnostic tags via xattr | N/S | |
-| [TP-3] | Path-derivable tags not written | Done | `api/queue.py:DERIVED_ATTRIBUTES` |
-| [TP-4] | Write metadata on accept | N/S | |
-| [TP-5] | Rewrite metadata on tag change | N/S | |
-| [TP-6] | Mirror to macOS Finder tags | N/S | |
+| [TP-1] | Write tags to native metadata fields | Done | `tag_writer.py:_write_audio_tags`, `_write_image_tags` |
+| [TP-2] | Format-agnostic tags via xattr | Done | `tag_writer.py:_write_xattrs` |
+| [TP-3] | Path-derivable tags not written | Done | `tag_writer.py:PATH_DERIVED_TAGS`, `COMPUTED_TAGS` |
+| [TP-4] | Write metadata on accept | Done | `api/queue.py:accept_file` calls `write_tags` before move |
+| [TP-5] | Rewrite metadata on tag change | Done | `api/tags.py:save_tags` — rewrites + relocates |
+| [TP-6] | Mirror to macOS Finder tags | Done | `tag_writer.py:_write_finder_tags` — plist binary xattr |
 | [TP-7] | Import Finder tags on discovery | N/S | |
-| [TP-8] | Linux xattr namespace | N/S | |
+| [TP-8] | Linux xattr namespace | Done | `tag_writer.py:_write_xattrs` — `user.pinpoint.root` |
 | [TP-9] | `pinpoint rebuild` from managed files | N/S | |
 | [TP-10] | Action history not recoverable | Done | `actions.py` (append-only) |
 | [TP-11] | Rebuild cross-checks path vs tags | N/S | |
@@ -148,6 +154,7 @@ Maps SPEC.md requirement IDs to implementation status and code locations.
 | [CF-2] | Default data dir `~/.pinpoint/` | Done | `config.py` |
 | [CF-3] | `--config` CLI flag | Done | `__main__.py` |
 | [CF-4] | Hot-reload on file change | Partial | `ConfigHolder` exists, watcher not connected |
+| [CF-5] | Analysis config (TMDb, Ollama, enable toggle) | Done | `config.py:AnalysisConfig` |
 
 ---
 
@@ -155,20 +162,20 @@ Maps SPEC.md requirement IDs to implementation status and code locations.
 
 | Section | Done | Partial | N/S |
 |---|---|---|---|
-| §1 Core Model | 4 | 0 | 1 |
+| §1 Core Model | 4 | 1 | 0 |
 | §2 Tag Taxonomy | 3 | 2 | 1 |
-| §3 Output Path | 8 | 1 | 2 |
+| §3 Output Path | 9 | 1 | 1 |
 | §4 Queue | 5 | 1 | 3 |
 | §5 Dedup | 1 | 0 | 1 |
-| §6 AI Analysis | 3 | 0 | 0 |
-| §7 Search & Browse | 0 | 2 | 7 |
+| §6 AI Analysis | 9 | 0 | 0 |
+| §7 Search & Browse | 0 | 3 | 6 |
 | §8 Favorites | 1 | 0 | 1 |
-| §9 File Detail | 0 | 0 | 2 |
+| §9 File Detail | 0 | 1 | 1 |
 | §10 Data Model | 3 | 0 | 0 |
 | §11 Monitoring | 0 | 0 | 7 |
-| §12 Tag Persistence | 2 | 0 | 9 |
-| §13 Configuration | 3 | 1 | 0 |
-| **Total** | **33** | **7** | **34** |
+| §12 Tag Persistence | 7 | 0 | 4 |
+| §13 Configuration | 4 | 1 | 0 |
+| **Total** | **46** | **10** | **25** |
 
 ```mermaid
 ---
@@ -176,7 +183,7 @@ config:
   look: handDrawn
 ---
 pie title Requirement Status
-    "Done" : 33
-    "Partial" : 7
-    "Not Started" : 34
+    "Done" : 46
+    "Partial" : 10
+    "Not Started" : 25
 ```

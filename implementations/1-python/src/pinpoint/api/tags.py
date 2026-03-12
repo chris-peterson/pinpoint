@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from pinpoint import database as db
 from pinpoint.actions import log_action
 from pinpoint.defaults import defaults_from_source
-from pinpoint.models import ActionVerb, File, ROOT_FIELDS
+from pinpoint.models import MULTI_VALUE_FIELDS, ActionVerb, File, ROOT_FIELDS
 from pinpoint.paths import derive_path
 from pinpoint.tag_writer import write_tags
 
@@ -238,25 +238,30 @@ async def save_tags(file_id: int, request: Request):
 
     # Insert new field-based tags from form
     tags: dict[str, list[str]] = {}
-    for field_id, _ in root_fields:
-        value = form.get(field_id, "").strip() if field_id in form else ""
-        if not value:
-            continue
-        tags[field_id] = [value]
-        tag_name = f"{field_id}:{value}"
-        existing = await db.fetch_one(conn, "SELECT id FROM tags WHERE name = ?", (tag_name,))
-        if existing:
-            tag_id = existing["id"]
+    for fid, _ in root_fields:
+        if fid in MULTI_VALUE_FIELDS:
+            values = [v.strip() for v in form.getlist(fid) if v.strip()]
         else:
-            tag_id = await db.execute(
-                conn,
-                "INSERT INTO tags (name, type) VALUES (?, ?)",
-                (tag_name, field_id),
+            val = form.get(fid, "").strip() if fid in form else ""
+            values = [val] if val else []
+        if not values:
+            continue
+        tags[fid] = values
+        for val in values:
+            tag_name = f"{fid}:{val}"
+            existing = await db.fetch_one(conn, "SELECT id FROM tags WHERE name = ?", (tag_name,))
+            if existing:
+                tid = existing["id"]
+            else:
+                tid = await db.execute(
+                    conn,
+                    "INSERT INTO tags (name, type) VALUES (?, ?)",
+                    (tag_name, fid),
+                )
+            await conn.execute(
+                "INSERT OR IGNORE INTO file_tags (file_id, tag_id) VALUES (?, ?)",
+                (file_id, tid),
             )
-        await conn.execute(
-            "INSERT OR IGNORE INTO file_tags (file_id, tag_id) VALUES (?, ?)",
-            (file_id, tag_id),
-        )
 
     # Also include non-field tags for path derivation
     other_tags = await db.fetch_all(

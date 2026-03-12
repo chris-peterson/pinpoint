@@ -16,10 +16,20 @@ class InputConfig:
 
 
 @dataclass(frozen=True)
+class AnalysisConfig:
+    """Optional AI analysis settings. All features degrade gracefully."""
+    tmdb_api_key: str = ""          # TMDb API key (free) for movie/TV lookups
+    ollama_url: str = "http://localhost:11434"  # Ollama base URL for vision LLM
+    ollama_model: str = "llava"     # Vision model name
+    enabled: bool = True            # Master switch for background analysis
+
+
+@dataclass(frozen=True)
 class Config:
     inputs: list[InputConfig] = field(default_factory=list)
     output: Path = Path("~/.pinpoint/files")
     data_dir: Path = Path("~/.pinpoint")
+    analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
 
     @property
     def db_path(self) -> Path:
@@ -64,7 +74,16 @@ def load_config(path: Path | None = None) -> Config:
     output = Path(raw.get("output", "~/.pinpoint/files")).expanduser()
     data_dir = Path(raw.get("data_dir", "~/.pinpoint")).expanduser()
 
-    return _expand(Config(inputs=inputs, output=output, data_dir=data_dir))
+    # Parse analysis config
+    analysis_raw = raw.get("analysis", {}) or {}
+    analysis = AnalysisConfig(
+        tmdb_api_key=str(analysis_raw.get("tmdb_api_key", "") or os.environ.get("TMDB_API_KEY", "")),
+        ollama_url=str(analysis_raw.get("ollama_url", "http://localhost:11434")),
+        ollama_model=str(analysis_raw.get("ollama_model", "llava")),
+        enabled=bool(analysis_raw.get("enabled", True)),
+    )
+
+    return _expand(Config(inputs=inputs, output=output, data_dir=data_dir, analysis=analysis))
 
 
 def _expand(config: Config) -> Config:
@@ -73,6 +92,7 @@ def _expand(config: Config) -> Config:
         inputs=[InputConfig(path=i.path.expanduser(), root=i.root) for i in config.inputs],
         output=config.output.expanduser(),
         data_dir=config.data_dir.expanduser(),
+        analysis=config.analysis,
     )
 
 
