@@ -1,9 +1,10 @@
-# Which implementation to run
-current := "1-python"
+# Spec version and implementation to run
+spec := "0.2"
+impl := "1-hybrid"
 
 # Run the current implementation
 run *args:
-    just -f implementations/{{current}}/justfile run {{args}}
+    just -f implementations/{{spec}}/{{impl}}/justfile run {{args}}
 
 # Reset database, recreate sample library, and run
 fresh *args:
@@ -11,23 +12,25 @@ fresh *args:
     just sample
     just run {{args}}
 
-# Run any implementation by number-name
-run-impl impl *args:
-    just -f implementations/{{impl}}/justfile run {{args}}
+# Run any implementation
+run-impl spec impl *args:
+    just -f implementations/{{spec}}/{{impl}}/justfile run {{args}}
 
 # Create sample library (shared across implementations)
 sample:
     rm -rf sample_library/ sample_output/
-    cd implementations/{{current}} && uv run python ../../scripts/create_sample_library.py --output ../../sample_library
+    cd implementations/{{spec}}/{{impl}} && uv run python ../../../scripts/create_sample_library.py --output ../../../sample_library
 
 # Reset database for the current implementation
 reset:
-    just -f implementations/{{current}}/justfile reset
+    just -f implementations/{{spec}}/{{impl}}/justfile reset
 
 # Run tests for the current implementation
 test *args:
-    just -f implementations/{{current}}/justfile test {{args}}
+    just -f implementations/{{spec}}/{{impl}}/justfile test {{args}}
 
 # List available implementations
 list:
-    @ls implementations/
+    @echo "Spec versions:" && ls implementations/
+    @echo "---"
+    @echo "Current: {{spec}}/{{impl}}"

@@ -1,0 +1,19 @@
+inputs:
+  - path: ../../../sample_library/memories
+    root: memory
+  - path: ../../../sample_library/music
+    root: music
+  - path: ../../../sample_library/movies
+    root: movie
+  - path: ../../../sample_library/tv
+    root: tv
+  - path: ../../../sample_library/podcasts
+    root: podcast
+  - path: ../../../sample_library/books
+    root: book
+  - path: ../../../sample_library/comedy
+    root: comedy
+
+output: ../../../sample_output
+
+import_mode: copy

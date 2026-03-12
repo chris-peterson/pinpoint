@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pinpoint</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Satoshi:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <div class="logo">
+      <h1>Pinpoint</h1>
+    </div>
+    <nav>
+      <a href="#/" class="nav-link" data-route="home">
+        <span class="nav-icon">&#9750;</span> Home
+      </a>
+      <a href="#/review" class="nav-link" data-route="review">
+        <span class="nav-icon">&#9881;</span> Review
+        <span class="badge" id="review-badge" style="display:none"></span>
+      </a>
+      <a href="#/whats-new" class="nav-link" data-route="whats-new">
+        <span class="nav-icon">&#10022;</span> What's New
+      </a>
+      <a href="#/missing" class="nav-link" data-route="missing" id="missing-link" style="display:none">
+        <span class="nav-icon">&#9888;</span> Missing
+        <span class="badge" id="missing-badge"></span>
+      </a>
+    </nav>
+    <div class="sidebar-stats" id="sidebar-stats"></div>
+  </aside>
+
+  <main class="main" id="main">
+    <div class="content" id="content"></div>
+  </main>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

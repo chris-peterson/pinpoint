@@ -1,4 +1,4 @@
-# SPEC.md — Pinpoint Requirements Specification (v0.2)
+# SPEC.md — Pinpoint Requirements Specification
 
 ## Requirements Notation
 
@@ -9,7 +9,7 @@ Each testable requirement has a stable ID in brackets: `[XX-N]`. Code and DECISI
 | CM | Core Model (§1) |
 | TX | Tag Taxonomy (§2) |
 | OP | Output Path (§3) |
-| MQ | Review & Refinement (§4) |
+| MQ | Migration Queue (§4) |
 | DS | Dedup & Stacking (§5) |
 | AI | AI Analysis (§6) |
 | LB | Library & Browse (§7) |
@@ -19,7 +19,6 @@ Each testable requirement has a stable ID in brackets: `[XX-N]`. Code and DECISI
 | OM | Output Monitoring (§11) |
 | XA | Extended Attributes (§12) |
 | CF | Configuration (§13) |
-| UX | UX Principles (§14) |
 
 ---
 
@@ -27,9 +26,7 @@ Each testable requirement has a stable ID in brackets: `[XX-N]`. Code and DECISI
 
 Stop thinking about filenames and folder structures. Just tag your files and let Pinpoint figure out the rest.
 
-Pinpoint is a local-first, tag-based file organization system. Point it at messy folders and walk away — files are automatically analyzed, tagged, and organized into a clean directory tree derived entirely from their tags. Come back later to browse, search, and refine. No manual renaming, no dragging into folders, no deciding where things go.
-
-The system is designed for **immediate value**: point it at a 10,000-file photo library, and within hours every file is organized and browsable. Perfection isn't required up front — users can filter to what matters (baby pictures from 2019, a specific artist's discography) and refine tags at their own pace.
+Pinpoint is a local-first, tag-based file organization system. Point it at messy folders, review and tag files with AI assistance, and they land in a clean, predictable directory tree — derived entirely from their tags. No manual renaming, no dragging into folders, no deciding where things go.
 
 Currently supports images, video, and audio. Designed to extend to any file type.
 
@@ -39,8 +36,8 @@ Currently supports images, video, and audio. Designed to extend to any file type
 
 ### Inputs and Output
 
-- **[CM-1]** **Inputs**: one or more folders the system watches. Each input has a **default root tag** that determines how discovered files are organized.
-- **[CM-2]** **Output**: a single root directory where imported files are stored in a deterministic path derived from their tags.
+- **[CM-1]** **Inputs**: one or more folders the system watches. Each input has a **default root tag** that determines how discovered files are organized. Files are never modified or moved until explicitly accepted.
+- **[CM-2]** **Output**: a single root directory where accepted files are stored in a deterministic path derived from their tags.
 
 ### File Lifecycle
 
@@ -51,27 +48,18 @@ config:
 ---
 flowchart LR
     A[Input folder] --> B[Discovered]
-    B --> C[Analyzing]
-    C --> D[Auto-imported]
-    D --> E[Imported]
-    E -->|User edits tags| E
-    E -->|External delete| F[Missing]
+    B --> C[Pending]
+    C -->|Accept| D[Managed]
+    C -->|Reject| A
+    C -->|Skip| E[Deferred]
+    E --> C
 ```
 
-- **[CM-3]** **Analyzing**: file is known to the system, metadata extracted, AI analysis in progress. Original file stays where it is. A **confidence score** (0.0–1.0) is computed from the available tag sources.
-- **[CM-4]** **Imported**: file has been analyzed, tagged, and placed in the output tree. Users can edit tags at any time; edits trigger relocation.
+- **[CM-3]** **Pending**: file is known to the system, thumbnail generated (for queue and library previews; video thumbnails use an early frame), AI analysis queued. Original file stays where it is.
+- **[CM-4]** **Managed**: file has been accepted, tags are written into the file's native metadata, and the file is physically moved to the output tree. The system owns this file.
+- **[CM-5]** **Files are the source of truth.** Tags are persisted in each file's native metadata format (EXIF/IPTC/XMP for images, ID3 for MP3, Vorbis comments for FLAC, etc.). The database is a cache — fully rebuildable by scanning managed files and reading their embedded tags. See §12.
 
-### Import mode
-
-- **[CM-11]** Pinpoint supports two import modes, configured globally (see §13):
-  - **`move`** — the file is moved from the input folder to the output tree. The source file no longer exists. This is space-efficient and avoids duplication, but requires trust.
-  - **`copy`** (default) — the file is copied to the output tree. The source file is left untouched. This is safe for first-time users and large initial imports where the user hasn't yet verified that Pinpoint is doing the right thing.
-- **[CM-12]** In `copy` mode, the source file is tracked in the database (`source_path` remains populated). The user can later switch to `move` mode or run a cleanup command to remove source files that have been successfully imported.
-- **[CM-13]** In `copy` mode, re-discovery of the same source file is suppressed by content hash — the file won't be re-imported even though it still exists in the input folder.
-- **[CM-5]** **Files are the source of truth.** Tags are persisted in each file's native metadata format (EXIF/IPTC/XMP for images, ID3 for MP3, Vorbis comments for FLAC, etc.). The database is a cache — fully rebuildable by scanning imported files and reading their embedded tags. See §12.
-- **[CM-6]** **Auto-import**: once analysis completes, files are automatically imported using the best available tags. There is no manual approval gate. Files with high confidence are silently organized; files with low confidence are flagged for review but still imported. The user's time is spent refining, not gatekeeping.
-
-### Discovery to import — detailed flow
+### Discovery to managed — detailed flow
 
 ```mermaid
 ---
@@ -83,57 +71,49 @@ sequenceDiagram
     participant D as Discovery
     participant DB as Database
     participant AI as AI Analysis
+    participant Q as Queue UI
     participant P as Path Engine
     participant O as Output Tree
-    participant UI as Review UI
 
     FS->>D: New/changed file detected
     D->>D: Hash file (SHA-256)
     D->>DB: Check for duplicate hash
     alt Duplicate found
-        D-->>DB: Skip (don't import)
+        D-->>DB: Skip (don't enter queue)
     else New file
-        D->>DB: Insert file (status: analyzing)
+        D->>DB: Insert file (status: pending)
         D->>DB: Apply default root from input config
     end
 
-    par Analysis (background)
-        DB->>AI: File queued for analysis
+    par AI analysis (background)
+        DB->>AI: Pending file queued
         AI->>AI: Extract embedded metadata
-        AI->>AI: Parse filename for tags
         AI->>AI: Run analysis pipeline (faces, vision, lookup)
-        AI->>DB: Store tags + compute confidence score
+        AI->>DB: Store suggestions with confidence scores
     end
 
-    AI->>P: Auto-import: derive path from best tags
-    P-->>AI: Deterministic output path
-    AI->>O: Move file to output path
-    AI->>DB: Update status to imported, store confidence
-    AI->>DB: Log auto_import action
+    Q->>DB: Fetch next pending file
+    DB-->>Q: File + suggestions + defaults
+    Q->>Q: User reviews, edits tags
+    Q->>P: Compute path preview (live)
+    P-->>Q: Deterministic output path
 
-    Note over UI: User browses library at leisure
-    UI->>UI: Filter to low confidence, date range, root, etc.
-    UI->>UI: Edit tags on files that need attention
-    UI->>P: Recompute path on tag change
-    P->>O: Relocate file if path changed
+    alt Accept
+        Q->>DB: Save final tags
+        Q->>P: Derive output path from tags
+        P-->>Q: Final path
+        Q->>O: Move file to output path
+        Q->>DB: Update status → managed, set managed_path
+        Q->>DB: Log accept action
+    else Reject
+        Q->>DB: Remove from queue
+        Q->>DB: Log reject action
+        Note over FS: Original file untouched
+    else Skip
+        Q->>DB: Mark skipped
+        Note over Q: File stays in queue, shown later
+    end
 ```
-
-### Confidence scoring
-
-- **[CM-7]** Every imported file has a **confidence score** (0.0–1.0) reflecting how reliable its auto-assigned tags are.
-- **[CM-8]** Confidence is computed from tag sources, weighted by reliability:
-
-| Source | Weight | Example |
-|--------|--------|---------|
-| Embedded metadata (ID3, EXIF) | High (0.9) | Artist/album/track from MP3 tags |
-| API lookup match (MusicBrainz, TMDb) | High (0.85) | Confirmed via external database |
-| Filename parsing (structured patterns) | Medium (0.6) | `S03E05` → season 3, episode 5 |
-| Directory structure | Medium (0.5) | Parent folder name → artist |
-| AI vision/scene description | Low (0.3) | LLM-suggested event name |
-| Fallback defaults | Minimal (0.1) | `_unknown` placeholders |
-
-- **[CM-9]** The file-level confidence is the **weighted average** of its individual tag confidences, with path-relevant tags weighted more heavily than non-path tags.
-- **[CM-10]** The UI surfaces confidence prominently: color-coded indicators, sortable/filterable, so users can focus review time where it matters most.
 
 ---
 
@@ -383,7 +363,7 @@ music/{tag:artist}/[{tag:year}] {tag:album?}/{tag:track} - {tag:name}<ext>
 ```
 
 - **[OP-3]** `track` is zero-padded (minimum 2 digits) for ordinal sorting. Extracted from embedded metadata. When no track number is available, the filename is the name alone (no "\-" separator).
-- **[OP-4]** For Various Artists compilations, see [AI-9]. The artist is "Various Artists" and the original filename is preserved as-is (it typically encodes `## - Artist - Track` which is more informative than just the title).
+- **[OP-4]** For Various Artists compilations (albumartist = "Various Artists"), the artist is "Various Artists" and the original filename is preserved as-is (it typically encodes `## - Artist - Track` which is more informative than just the title).
 
 | Tags | Output path |
 |---|---|
@@ -498,55 +478,40 @@ Defaults derived from embedded metadata or folder structure are automatically co
 - **[OP-8]** Missing required path segments use `_unknown` as a placeholder.
 - **[OP-9]** Duplicate filenames within the same directory scope auto-stack with numeric suffixes ("\-1", "\-2", etc.).
 - **[OP-10]** When a stack dissolves to one file, the suffix is removed.
-- **[OP-11]** Changing any path-affecting tag on an imported file triggers relocation. Empty parent directories are cleaned up.
+- **[OP-11]** Changing any path-affecting tag on a managed file triggers relocation. Empty parent directories are cleaned up.
 
 ---
 
-## 4. Review & Refinement
+## 4. Migration Queue
 
-Files are auto-imported as soon as analysis completes (see §1). The review UI is for browsing, filtering, and refining tags on files that need attention — not for gatekeeping every import.
+The queue is the primary workflow for ingesting new files. Accessible via sidebar navigation.
 
-### Import status
+### Behavior
 
-- **[MQ-1]** The sidebar shows an **import progress indicator**: files analyzing, recently imported count, and a badge for files needing review (confidence below threshold).
-- **[MQ-2]** Import is fully unattended. A large library pointed at Pinpoint for the first time should be fully organized within hours, not weeks.
+- **[MQ-1]** Shows pending files **one at a time**, sorted **newest first**.
+- **[MQ-2]** Full-size preview (image viewer, video player, audio player).
+- **[MQ-3]** File metadata: filename, size, dimensions/duration, creation date, source path.
+- **[MQ-4]** **Live preview of the output path**, updating in real time as tags are added or changed.
+- **[MQ-5]** Queue count badge in the sidebar navigation.
 
-### Needs Review view
+### Queue modes
 
-- **[MQ-3]** Accessible via sidebar. Shows imported files sorted by **confidence ascending** (lowest confidence first), so the most uncertain files get attention first.
-- **[MQ-4]** Filterable by: root, file class, confidence range, date range, specific missing tags.
-- **[MQ-5]** Each file shows: preview thumbnail, current tags (with source indicators), confidence score, and the current output path.
+#### Single-file review (default for images/video)
 
-### Single-file review
+One file at a time. Tag, preview path, accept/skip/reject.
 
-- **[MQ-6]** Full-size preview (image viewer, video player, audio player).
-- **[MQ-7]** File metadata: filename, size, dimensions/duration, creation date, source path.
-- **[MQ-8]** **Live preview of the output path**, updating in real time as tags are edited.
-- **[MQ-9]** Tag source indicators show where each default came from:
+#### Batch review (for audio, movies, TV, and bulk-tagged content)
 
-| Indicator | Meaning |
-|-----------|---------|
-| `metadata` | Extracted from embedded file metadata (ID3, EXIF, etc.) |
-| `filename` | Parsed from filename or directory structure |
-| `api` | Matched via external API (MusicBrainz, TMDb) |
-| `ai` | Suggested by local AI (vision model, face detection) |
-| `manual` | Entered or edited by the user |
+Preview an entire folder or group at once. Useful when metadata APIs or filename parsing pre-fill most tags.
 
-- **[MQ-10]** Users can edit any tag. Edits trigger immediate relocation if path-relevant tags changed. Confidence for edited tags is set to 1.0 (manual = certain).
+- **[MQ-6]** Table/list view: filename, suggested tags, confidence.
+- **[MQ-7]** "Accept all" applies defaults and accepts the batch. Available when all files in the current source folder have stable embedded metadata (artist, album, year, and track title all present). Shown as a button in the single-file queue view when applicable.
+- **[MQ-8]** Individual rows editable or rejectable before batch accept.
+- **[MQ-9]** Click a row to open single-file detail.
 
-### Batch review
+### Tag entry in the queue
 
-Preview an entire folder or group at once. Useful for bulk refinement.
-
-- **[MQ-11]** Table/list view: filename, current tags, confidence, output path.
-- **[MQ-12]** Bulk tag application: select multiple files, apply a tag to all (e.g., set `event:` for an entire folder of photos).
-- **[MQ-13]** Individual rows expandable for single-file editing.
-
-### Removing files
-
-There is no reject/delete action in the UI. If a user wants to remove a file from the library, they use **"Show in Finder"** (see [LB-8]) and delete or move it themselves. The output monitor (§11) detects the change and marks the file as `missing`. This keeps the UI simple and leverages tools users already know.
-
-### Tag fields by root
+The root tag is shown at the top — inherited from the input folder, switchable via dropdown. Changing the root updates the available fields and the path preview.
 
 Fields shown depend on the root:
 
@@ -560,9 +525,9 @@ Fields shown depend on the root:
 | `book` | Author, Series (optional), Title, Tags |
 | `comedy` | Artist, Title, Year, Tags |
 
-Each field has contextual labels and placeholder text appropriate to the root.
+Each field has contextual labels and placeholder text appropriate to the root. Year fields are auto-populated from embedded metadata when available.
 
-### Completeness indicators
+### Completeness nudge
 
 Which tags are "expected" depends on the root:
 
@@ -576,8 +541,9 @@ Which tags are "expected" depends on the root:
 | `book` | `author:` + `name:` |
 | `comedy` | `artist:` + `name:` |
 
-- Missing expected tags contribute to low confidence and are visually indicated with a dot marker on the field label.
-- Files with all expected tags filled from high-confidence sources rarely need review.
+- Missing expected tags show an orange warning.
+- Accept button dims to "Accept anyway…" with a confirmation explaining the fallback path.
+- Field labels show "● expected" indicator until filled.
 
 ---
 
@@ -585,7 +551,7 @@ Which tags are "expected" depends on the root:
 
 ### Exact duplicates
 
-- **[DS-1]** Content hash at discovery. Duplicates are never imported.
+- **[DS-1]** Content hash at discovery. Duplicates never enter the queue.
 
 ### Perceptual similarity (images only)
 
@@ -621,21 +587,20 @@ flowchart TD
     R -->|memories| FD[Face detection]
     R -->|memories| VL[Vision LLM]
     R -->|movies/tv/comedy| ML[Movie/TV lookup]
-    FD --> T[Tags + confidence]
-    VL --> T
-    ML --> T
+    FD --> S[Suggestions table]
+    VL --> S
+    ML --> S
     ME --> API[MusicBrainz / AcoustID lookup]
-    ME --> T
-    API --> T
-    T --> CS[Compute confidence score]
-    CS --> AI[Auto-import to output tree]
+    ME --> S
+    API --> S
+    S --> Q[Queue UI shows suggestions]
 ```
 
 ### Background worker
 
-- **[AI-0]** Processes discovered files and **auto-imports them** once analysis completes. This is the core import pipeline — there is no manual gate.
-- Processes files newest first. Degrades gracefully: if any analysis tool is unavailable, skip it and proceed with whatever tags are available.
-- Files are imported even if confidence is low — `_unknown` placeholders are acceptable. The user refines later.
+- Processes pending files in queue order (newest first).
+- Should stay ahead of the user — when the queue is opened, the current file and nearby files are prioritized so suggestions are ready before the user sees them.
+- Degrades gracefully: if any analysis tool is unavailable, skip it and move on.
 
 ### Image/video analysis
 
@@ -697,36 +662,18 @@ For files in `root:movie`, `root:tv`, and `root:comedy` — attempt to identify 
 | Season/Episode | — | `season:` + `episode:` | — |
 | Performer/Director | — | — | `artist:` |
 
-### Tag resolution and auto-import
+### Suggestions
 
-- **[AI-4]** Analysis results are stored as tags with source and confidence metadata. The best available value for each tag field is selected automatically: embedded metadata > API lookup > filename parsing > AI suggestion > `_unknown`.
-- **[AI-5]** Once analysis completes, the file is auto-imported: tags are persisted, the output path is derived, and the file is moved to the output tree. The file's overall confidence score is recorded.
-- **[AI-6]** Unknown faces → stored as unidentified face regions. When the user later labels a face, the system uses that label for future recognition across all files.
-- **[AI-7]** The review UI shows analysis source for each tag so users can see why a tag was assigned and override with confidence.
-
-### Filename parsing patterns
-
-- **[AI-8]** The following filename patterns should be recognized across roots:
-
-| Pattern | Example | Extracted tags |
-|---------|---------|----------------|
-| `S##E##` | `The.Office.S03E05.720p.mkv` | show, season, episode |
-| `(YYYY)` or `[YYYY]` | `There Will Be Blood (2007).mp4` | year, name (text before year) |
-| `## - Title` | `01 - Time.flac` | track, name |
-| `YYYY.Name` | `John.Mulaney.Kid.Gorgeous.2018.WEBRip.mp4` | year, name (dots → spaces) |
-| Directory structure | `Pink Floyd/[1973] Dark Side of the Moon/` | artist, year, album |
-
-- Dot-separated words are converted to spaces. Common release-group suffixes (720p, WEBRip, x264, etc.) are stripped before extracting the title.
-
-### Various Artists handling
-
-- **[AI-9]** When embedded metadata contains `albumartist = "Various Artists"` (or equivalent), set `artist:Various Artists` and preserve the original filename as-is (it typically encodes `## - Artist - Track` which is more informative than just the title).
+- AI results are stored as suggestions with a confidence score.
+- Displayed in the queue UI as provisional tags the user can accept or dismiss.
+- Unknown faces → "Who is this?" prompt → creates `person:` tag + stores reference for future recognition.
+- Queue UI shows analysis status and updates as suggestions arrive.
 
 ---
 
 ## 7. Search and Browsing
 
-The home page. The default landing experience is searching and browsing the library.
+The home page. The default landing experience is searching and browsing the managed library.
 
 ### Search
 
@@ -742,23 +689,21 @@ The home page. The default landing experience is searching and browsing the libr
 
 ### Folders
 
-A **folder** is a virtual grouping of imported files, derived from the primary grouping segment of each root's path formula. Each folder has a **name** and a **hero image**.
+A **folder** is a virtual grouping of managed files, derived from the primary grouping segment of each root's path formula. Each folder has a **name** and a **hero image**.
 
 - **[LB-4]** Folders are the primary browsing unit. The home page shows folders as cards (hero image + name).
 - **[LB-4a]** Clicking a folder card **drills down** into that folder, showing its subfolders and files. Folder browsing is hierarchical with breadcrumb navigation — it does not jump to a flat library view.
 - **[LB-5]** The hero image is the first image file in the folder (by date), or the stack cover if one exists. Falls back to a file-type icon when no image is available.
 
-| Root | Folder grouping tags | Grouping depth | Example folder name |
-|------|---------------------|----------------|-------------------|
-| memory | `event:` | 1 | "Hawaii Vacation" |
-| music | `artist:`, `album:` | 2 | "Pink Floyd — Dark Side of the Moon" |
-| movie | `series:` | 1 | "Indiana Jones" |
-| tv | `show:`, `season:` | 2 | "The Office — Season 3" |
-| podcast | `show:` | 1 | "Hardcore History" |
-| book | `author:` | 1 | "Tolkien" |
-| comedy | `artist:` | 1 | "John Mulaney" |
-
-- **[LB-4b]** The **grouping depth** determines how many path segments from the output tree are collapsed into a single folder card on the home page. Files deeper than the grouping depth appear as contents within the folder. Files at or above the grouping depth appear as standalone items alongside folders.
+| Root | Folder level | Example folder name |
+|------|-------------|-------------------|
+| memory | `event:` | "Hawaii Vacation" |
+| music | `artist:` + `album:` | "Pink Floyd — Dark Side of the Moon" |
+| movie | `series:` | "Indiana Jones" |
+| tv | `show:` + `season:` | "The Office — Season 3" |
+| podcast | `show:` | "Hardcore History" |
+| book | `author:` + `series:` | "Tolkien — Middle Earth" |
+| comedy | `artist:` | "John Mulaney" |
 
 - **[LB-6]** Files without a grouping tag (e.g., a movie with no `series:`) appear as standalone items alongside folders.
 - **[LB-7]** Clicking a folder opens it to show its contents — individual files with contextual icons:
@@ -767,11 +712,6 @@ A **folder** is a virtual grouping of imported files, derived from the primary g
   - Video: film icon — click to open/preview.
 - **[LB-8]** Browse views offer **"Open in Finder"** (macOS) / **"Open in file manager"** actions at every level: folder cards, subfolder headings, and individual files. This bridges the Pinpoint UI with the native filesystem.
 - Favorites marked with a star indicator. Favorites sort first.
-
-### What's New
-
-- **[LB-9]** Shows recently imported files, sorted by `imported_at` descending. Useful when input folders are shared externally (e.g. a NAS, a synced folder, a partner's photo dump) — the user can see what arrived since they last checked.
-- **[LB-10]** Grouped by import date (today, yesterday, this week, earlier). Each entry shows the file preview, assigned tags, confidence, and root.
 
 ### On This Day
 
@@ -797,13 +737,9 @@ A **folder** is a virtual grouping of imported files, derived from the primary g
 ## 9. File Detail View
 
 - Full-size preview (image/video/audio) in overlay.
-- Sidebar: favorite toggle, metadata, all tags (editable with source indicators per [MQ-9]), confidence score, face regions for `person:` tags.
-- **"Show in Finder"** button to open the file's location in the native file manager. Users manage files (delete, move) through the OS; the output monitor (§11) handles the rest.
-
-### Preview serving
-
-- **[FD-1]** The server exposes a `/preview/:id` endpoint that serves file content for in-browser display. For imported files, serves from `output_path`. For files still being analyzed, serves from `source_path`.
-- **[FD-2]** Preview supports streaming for large video/audio files (HTTP range requests).
+- Sidebar: favorite toggle, metadata, all tags (editable), face regions for `person:` tags.
+- Managed files: delete removes from disk + cleans empty parents.
+- Pending files: reject removes from queue only.
 
 ---
 
@@ -811,10 +747,10 @@ A **folder** is a virtual grouping of imported files, derived from the primary g
 
 ### Core entities
 
-- **files** — every known file. Tracks: `source_path`, `output_path`, lifecycle status (`analyzing`/`imported`/`missing`/`drifted`), root, class, content hash, perceptual hash, temporal metadata (`creation_date`, `discovery_date`, `imported_at`), favorite flag, stack membership, analysis state, **confidence score** (0.0–1.0), `last_indexed_at` (timestamp of last audit — validates input tags and output filename consistency).
+- **files** — every known file. Tracks: source location, managed location, lifecycle status (pending/managed/missing/drifted), root, class, content hash, perceptual hash, temporal metadata (creation, discovery, managed dates), favorite flag, stack membership, analysis state, `last_indexed_at` (timestamp of last audit — validates input tags and output filename consistency).
 - **tags** — tag dictionary. Tracks: full name (e.g. `event:hawaii-vacation:snorkeling`), type (root/event/name/person/artist/author/album/title/show/season/series/general), whether built-in.
-- **file_tags** — associates files with tags. Tracks: region (face bounding box if applicable), when applied, **source** (`metadata`/`filename`/`api`/`ai`/`manual`), **confidence** (0.0–1.0 for this specific tag assignment).
-- **suggestions** — AI analysis results before they become tags. Tracks: target file, kind, suggested value, confidence, region, status (pending/applied/dismissed). Once auto-import applies a suggestion, it becomes a file_tag.
+- **file_tags** — associates files with tags. Tracks: region (face bounding box if applicable), when applied.
+- **suggestions** — AI analysis results. Tracks: target file, kind, suggested value, confidence, region, status (pending/accepted/dismissed).
 - **stacks** — groups of similar or colliding files. Tracks: cover file, member ordering.
 - **known_faces** — labeled face embeddings for recognition. Tracks: label, embedding vector, source reference.
 - **full-text search index** — across filenames, tag names, metadata, AI descriptions.
@@ -823,14 +759,13 @@ A **folder** is a virtual grouping of imported files, derived from the primary g
 
 - **[DM-1]** **actions** — append-only audit trail of every state-changing operation.
   - timestamp
-  - action verb: `discover`, `auto_import`, `delete`, `tag_add`, `tag_remove`, `tag_edit`, `favorite`, `unfavorite`, `relocate`, `rename`, `move`, `missing`, `stack_create`, `stack_reorder`, `stack_dissolve`
+  - action verb: `discover`, `accept`, `reject`, `delete`, `tag_add`, `tag_remove`, `favorite`, `unfavorite`, `relocate`, `rename`, `move`, `missing`, `stack_create`, `stack_reorder`, `stack_dissolve`, `suggestion_accept`, `suggestion_dismiss`
   - file id (nullable for system-level actions)
   - detail payload — action-specific context, e.g.:
-    - `auto_import`: source path, destination path, confidence score
+    - `accept`: source path, destination path
     - `relocate`: old path, new path, which tag change triggered it
-    - `tag_add`: tag name, source, confidence, region if applicable
-    - `tag_edit`: old value, new value, field name
-    - `delete`: path, whether file was imported
+    - `tag_add`: tag name, region if applicable
+    - `delete`: path, whether file was managed
     - `discover`: source path, content hash
     - `rename`: old path, new path (external change)
     - `move`: old path, new path (external change)
@@ -846,8 +781,8 @@ The output directory is a regular folder. Users may interact with it directly vi
 
 ### File renamed
 
-- **[OM-1]** Detect via filesystem watcher (file at known `output_path` disappears, new file appears in same directory with same size/hash).
-- **[OM-2]** Update `output_path` in the database.
+- **[OM-1]** Detect via filesystem watcher (file at known `managed_path` disappears, new file appears in same directory with same size/hash).
+- **[OM-2]** Update `managed_path` in the database.
 - **[OM-3]** Log a `rename` action with old and new paths.
 - **[OM-4]** **Do not** reverse-derive tags from the new filename. The rename is accepted as-is — tags remain the source of truth. The file is now "drifted" from its tag-derived path.
 - Optionally surface drifted files in the UI so the user can reconcile (re-tag to match, or trigger a relocate to snap back).
@@ -855,38 +790,34 @@ The output directory is a regular folder. Users may interact with it directly vi
 ### File moved
 
 - Detect via watcher (file disappears from known path, same hash appears elsewhere in output tree).
-- Update `output_path`.
+- Update `managed_path`.
 - Log a `move` action with old and new paths.
 - Same drift handling as rename — tags don't change, file is marked as drifted.
 
 ### File deleted externally
 
-- **[OM-5]** Detect via watcher (file at known `output_path` no longer exists, no matching hash found elsewhere).
+- **[OM-5]** Detect via watcher (file at known `managed_path` no longer exists, no matching hash found elsewhere).
 - **[OM-6]** Mark file as `missing` in the database (not deleted from DB — preserve the metadata and action history).
 - **[OM-7]** Log a `missing` action.
-### Missing files view
-
-- **[OM-8]** Missing files are surfaced in a dedicated view accessible from the sidebar (shown only when missing files exist).
-- **[OM-9]** Each entry shows: the file's last known path, root, tags, and when it went missing.
-- **[OM-10]** Users can **dismiss** individual missing records (removes the file from the database) or **dismiss all** to clear the list. No confirmation dialog — dismissed records can be seen in the action log if needed.
+- Surface in the UI so the user can acknowledge (remove from DB) or investigate.
 
 ### New file added to output
 
 - Detect via watcher (unknown file appears in output tree).
-- Treat it like a discovery: hash it, check for duplicates, run through the analysis pipeline.
-- Attempt to reverse-derive tags from the path (e.g. a file at `music/pink-floyd/[1973] dark-side-of-the-moon/time.flac` → derive `root:music`, `artist:pink-floyd`, `album:dark-side-of-the-moon`, `year:1973`, `name:time`).
-- Since the file is already in the output tree, auto-import registers it as imported in-place (no copy/move needed).
+- Treat it like a discovery from an input folder: hash it, check for duplicates, add to the pending queue.
+- Attempt to reverse-derive tags from the path (e.g. a file at `music/pink-floyd/[1973] dark-side-of-the-moon/time.flac` → suggest `root:music`, `artist:pink-floyd`, `album:[1973] dark-side-of-the-moon`, `name:time`).
+- Since the file is already in the output tree, accepting it just registers it as managed in-place (no move needed).
 
 ### Periodic verification
 
-- On startup (and optionally on a schedule), scan all imported files and verify they exist at their expected paths.
+- On startup (and optionally on a schedule), scan all managed files and verify they exist at their expected paths.
 - Surface any missing or drifted files.
 
 ## 12. Tag Persistence
 
 ### Principle: files are the source of truth
 
-Imported files must be self-describing. Pinpoint writes tags into each file using the most native metadata format available for that file type. The database is a cache — it must be fully rebuildable by scanning the output directory and reading embedded tags from imported files.
+Managed files must be self-describing. Pinpoint writes tags into each file using the most native metadata format available for that file type. The database is a cache — it must be fully rebuildable by scanning the output directory and reading embedded tags from managed files.
 
 ### Native formats by file type
 
@@ -926,8 +857,8 @@ Pinpoint never invents its own metadata format. Every tag is stored using an exi
 - **[TP-1]** Tags with native metadata fields are written to those fields directly. Pinpoint reads from and writes to native fields.
 - **[TP-2]** Tags that are format-agnostic (`root`, `favorite`, general tags) are stored as extended attributes.
 - **[TP-3]** Tags derivable from the output path or the file itself are never written — they are reconstructed on read.
-- **[TP-4]** On auto-import (or manual tag edit), native metadata and xattrs are written before the file is moved to the output tree.
-- **[TP-5]** On tag change (imported file), metadata is rewritten and the file is relocated if path-relevant tags changed.
+- **[TP-4]** On accept, native metadata and xattrs are written before the file is moved to the output tree.
+- **[TP-5]** On tag change (managed file), metadata is rewritten and the file is relocated if path-relevant tags changed.
 
 ### Extended attributes
 
@@ -940,7 +871,7 @@ Pinpoint never invents its own metadata format. Every tag is stored using an exi
 
 ### Database rebuild
 
-- **[TP-9]** `pinpoint rebuild` scans the output directory, reads native metadata + xattrs + path structure from every imported file, and reconstructs the `files`, `tags`, and `file_tags` tables.
+- **[TP-9]** `pinpoint rebuild` scans the output directory, reads native metadata + xattrs + path structure from every managed file, and reconstructs the `files`, `tags`, and `file_tags` tables.
 - **[TP-10]** Action history is not recoverable (append-only log is database-only).
 - **[TP-11]** Rebuild cross-checks: a file's directory position should be consistent with its embedded tags. Inconsistencies are flagged as drifted.
 
@@ -966,31 +897,13 @@ inputs:
     root: movie
 
 output: ~/.pinpoint/files
-
-import_mode: copy   # "copy" (default) or "move"
 ```
 
 Everything else has sensible defaults in code. Hot-reloads on file change.
 
-### Import mode
+**Data directory**: Pinpoint stores system data under `~/.pinpoint/` by default (database, thumbnails, etc.). The managed output tree lives at the configured `output:` path within this directory.
 
-- **[CF-7]** `import_mode: copy` (default) — source files are preserved. The output tree is fully disposable — delete it and re-import at any time. See [CM-11]–[CM-13].
-- **[CF-8]** `import_mode: move` — source files are removed after import. This is an expert setting. On first use, the system logs a warning: *"Move mode enabled — source files will be deleted after import. Source files cannot be recovered if the output is deleted. Consider using copy mode unless you are disk-constrained."*
-- **[CF-9]** `pinpoint cleanup-sources` — a CLI command that removes source files for all successfully imported files (in `copy` mode). Provides a summary and file count before acting, requires explicit confirmation. This is the recommended way to reclaim disk space: run in `copy` mode until satisfied, then clean up.
-
-### System paths
-
-- **[CF-1]** **Data directory**: `~/.pinpoint/` by default. Stores the database, thumbnails, and other system data. Configurable via `data_dir:` in config or `PINPOINT_DATA_DIR` environment variable.
-- **[CF-2]** **Config file location**: `~/.pinpoint/config.yaml`. Overridable via `--config <path>` or `PINPOINT_CONFIG` environment variable.
-- **[CF-3]** **Path resolution**: all relative paths in the config file resolve relative to the **config file's parent directory**, not the current working directory. This ensures `--config path/to/config.yaml` works predictably regardless of where the command is run. `~` expands to the user's home directory.
-
-### Input merging
-
-- **[CF-4]** When adding an input that is a **parent directory** of an existing input with the same root, the child input is automatically replaced by the parent. Files already imported from the child path are unaffected — they are not re-imported since their content hash is already known.
-- **[CF-5]** If a new parent input has a **different root** than an existing child input, the configuration is rejected with an error requiring the user to resolve the conflict (remove the child entry or change its root to match).
-- **[CF-6]** When adding an input that is a **child directory** of an existing input with the same root, it is a no-op — the parent already covers the child. A warning is logged.
-
-This supports incremental adoption: start with `~/Pictures/iPhone` to test, then broaden to `~/Pictures` once confident.
+Config file location: `~/.pinpoint/config.yaml`. Overridable via `--config <path>` or `PINPOINT_CONFIG` environment variable.
 
 ### Path template syntax
 
@@ -1072,30 +985,12 @@ roots:
 
 ---
 
-## 14. UX Principles
-
-### No confirmation dialogs
-
-- **[UX-1]** The UI must not use confirmation dialogs (`alert()`, `confirm()`, modal "Are you sure?" prompts). These are lazy substitutes for reversible design.
-- **[UX-2]** Instead, design every action to be **reversible**:
-
-| Action | Reversal |
-|--------|----------|
-| Edit a tag | Edit it again; the action log records every change |
-| Remove a file | Delete via Finder; source is intact (copy mode). Re-import by re-adding the source folder |
-| Bulk tag change | Edit again; action log records every change |
-| Hate everything | Delete the output tree, adjust config, re-import from untouched sources |
-
-- **[UX-3]** For high-impact actions (bulk operations affecting many files), use **inline summaries** instead of confirmation dialogs. Show what will happen ("Applying `event:Hawaii Vacation` to 47 files") with a prominent action button — not a system dialog asking if you're sure.
-- **[UX-4]** The only exception is `pinpoint cleanup-sources` (CLI), which permanently deletes source files. CLI commands that destroy data require explicit `--confirm` flags or interactive confirmation, since they operate outside the undo model.
-
----
-
-## 15. Out of Scope (for now)
+## 14. Out of Scope (for now)
 
 - Multi-user / authentication.
 - Remote/cloud storage backends.
 - Mobile-optimized UI (basic responsive only).
+- Undo/history UI (action log exists for manual recovery, but no automated undo).
 - Lyrics / subtitle handling.
 - Music videos root (add when needed).
 - Custom root definitions (extend when needed).
