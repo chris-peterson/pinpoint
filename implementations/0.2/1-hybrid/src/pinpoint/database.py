@@ -6,7 +6,6 @@ import aiosqlite
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_path TEXT NOT NULL,
     output_path TEXT,
     status TEXT NOT NULL DEFAULT 'analyzing',
     root TEXT NOT NULL,
@@ -76,7 +75,7 @@ CREATE TABLE IF NOT EXISTS actions (
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
-    source_path, output_path, content='files', content_rowid='id'
+    output_path, content='files', content_rowid='id'
 );
 
 CREATE INDEX IF NOT EXISTS idx_files_status ON files(status);

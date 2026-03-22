@@ -4,6 +4,27 @@
 
 Each testable requirement has a stable ID in brackets: `[XX-N]`. Code and DECISIONS.md reference these IDs for traceability.
 
+### EARS Syntax
+
+Requirements use the [EARS (Easy Approach to Requirements Syntax)](https://alistairmavin.com/ears) keyword-driven templates:
+
+| Pattern | Keyword | Template |
+|---------|---------|----------|
+| Ubiquitous | _(none)_ | The system shall \<response\> |
+| State-Driven | **While** | While \<precondition\>, the system shall \<response\> |
+| Event-Driven | **When** | When \<trigger\>, the system shall \<response\> |
+| Optional | **Where** | Where \<feature is included\>, the system shall \<response\> |
+| Unwanted Behaviour | **If...then** | If \<condition\>, then the system shall \<response\> |
+
+### Status Annotations
+
+Each requirement includes inline status:
+- `Status: Done` — implemented and tested
+- `Status: Partial` — some aspects implemented, gaps noted
+- `Status: Not Started` — not yet implemented
+
+### Requirement Prefixes
+
 | Prefix | Section |
 |--------|---------|
 | CM | Core Model (§1) |
@@ -17,7 +38,7 @@ Each testable requirement has a stable ID in brackets: `[XX-N]`. Code and DECISI
 | FD | File Detail (§9) |
 | DM | Data Model (§10) |
 | OM | Output Monitoring (§11) |
-| XA | Extended Attributes (§12) |
+| TP | Tag Persistence (§12) |
 | CF | Configuration (§13) |
 | UX | UX Principles (§14) |
 
@@ -37,10 +58,33 @@ Currently supports images, video, and audio. Designed to extend to any file type
 
 ## 1. Core Mental Model
 
-### Inputs and Output
+### The Library
 
-- **[CM-1]** **Inputs**: one or more folders the system watches. Each input has a **default root tag** that determines how discovered files are organized.
-- **[CM-2]** **Output**: a single root directory where imported files are stored in a deterministic path derived from their tags.
+A pinpoint **library** is a single directory that contains everything the system manages: an `_input/` folder where files arrive, a `_rejections/` quarantine inside `_input/`, and the per-root output trees as siblings.
+
+```text
+<library>/
+├── _input/
+│   ├── _rejections/      # files pinpoint cannot or will not process
+│   ├── memory/           # drop photos/videos here → root:memory
+│   ├── music/            # drop audio here → root:music
+│   ├── tv/               # drop TV episodes here → root:tv
+│   ├── movie/            # drop films here → root:movie
+│   ├── podcast/          # drop podcasts here → root:podcast
+│   ├── book/             # drop books here → root:book
+│   └── comedy/           # drop stand-up here → root:comedy
+├── memories/             # output tree for root:memory
+├── music/                # output tree for root:music
+├── tv/                   # …and so on
+└── …
+```
+
+Files become managed by entering `_input/<root>/`. Pinpoint owns everything below the library root — moving a file from `_input/<root>/` to its derived output path (or to `_input/_rejections/`) is an internal rearrangement, never an operation against the user's original file.
+
+- **[CM-1]** The system shall manage a single **library** directory configured via `library:` (see §13). The system shall create and maintain `<library>/_input/<root>/` subdirectories for each known root and `<library>/_input/_rejections/` on startup if they do not already exist. `Status: Not Started`
+- **[CM-2]** The system shall treat any file appearing in `<library>/_input/<root>/` as a discovery with `root:<root>` as the default root tag. The system shall not scan paths outside the library. `Status: Not Started`
+- **[CM-CD]** When a watcher event fires on a file in `_input/<root>/`, the system shall delay processing until the file has been quiet (no further filesystem events, stable size and mtime) for a **quiet period** of at least 2 seconds. This gives in-progress copies time to complete before pinpoint reads the file. The quiet period shall be configurable. `Status: Not Started`
+- **[CM-A]** When the system cannot process a file (unsupported class, import failure, or explicit user rejection), the system shall move the file to `<library>/_input/_rejections/<root>/<relative-path>`, preserving the file's relative path under its `_input/<root>/` source. Intermediate directories shall be created as needed. The system shall not re-scan `_input/_rejections/`. `Status: Not Started`
 
 ### File Lifecycle
 
@@ -50,26 +94,24 @@ config:
   look: handDrawn
 ---
 flowchart LR
-    A[Input folder] --> B[Discovered]
+    A["_input/&lt;root&gt;/"] --> B[Discovered]
     B --> C[Analyzing]
     C --> D[Auto-imported]
     D --> E[Imported]
     E -->|User edits tags| E
     E -->|External delete| F[Missing]
+    B -->|Unsupported / failure| R["_input/_rejections/"]
+    C -->|User rejects| R
 ```
 
-- **[CM-3]** **Analyzing**: file is known to the system, metadata extracted, AI analysis in progress. Original file stays where it is. A **confidence score** (0.0–1.0) is computed from the available tag sources.
-- **[CM-4]** **Imported**: file has been analyzed, tagged, and placed in the output tree. Users can edit tags at any time; edits trigger relocation.
+- **[CM-3]** While a file is in the **analyzing** state, the system shall leave the file in place under `_input/<root>/` and compute a **confidence score** (0.0–1.0) from available tag sources. `Status: Done` `Impl: discovery.py`
+- **[CM-4]** When a file completes analysis, the system shall tag it, place it in the output tree, and transition it to **imported** status. While a file is imported, the system shall allow tag edits and trigger relocation when path-relevant tags change. `Status: Done` `Impl: api/queue.py:accept_file`
 
 ### Import mode
 
-- **[CM-11]** Pinpoint supports two import modes, configured globally (see §13):
-  - **`move`** — the file is moved from the input folder to the output tree. The source file no longer exists. This is space-efficient and avoids duplication, but requires trust.
-  - **`copy`** (default) — the file is copied to the output tree. The source file is left untouched. This is safe for first-time users and large initial imports where the user hasn't yet verified that Pinpoint is doing the right thing.
-- **[CM-12]** In `copy` mode, the source file is tracked in the database (`source_path` remains populated). The user can later switch to `move` mode or run a cleanup command to remove source files that have been successfully imported.
-- **[CM-13]** In `copy` mode, re-discovery of the same source file is suppressed by content hash — the file won't be re-imported even though it still exists in the input folder.
-- **[CM-5]** **Files are the source of truth.** Tags are persisted in each file's native metadata format (EXIF/IPTC/XMP for images, ID3 for MP3, Vorbis comments for FLAC, etc.). The database is a cache — fully rebuildable by scanning imported files and reading their embedded tags. See §12.
-- **[CM-6]** **Auto-import**: once analysis completes, files are automatically imported using the best available tags. There is no manual approval gate. Files with high confidence are silently organized; files with low confidence are flagged for review but still imported. The user's time is spent refining, not gatekeeping.
+- **[CM-11]** When a file is imported, the system shall **move** the file from `_input/<root>/` to the output tree. The library is the only path under pinpoint's control, so the original-file move/copy distinction does not apply — bringing files into `_input/` is the user's onboarding step (see §13). `Status: Done` `Impl: discovery.py:_auto_import`
+- **[CM-5]** The system shall persist tags in each file's native metadata format (EXIF/IPTC/XMP for images, ID3 for MP3, Vorbis comments for FLAC, etc.). The database shall be fully rebuildable by scanning imported files and reading their embedded tags. See §12. `Status: Partial — tag_writer.py writes on accept; rebuild not implemented` `Impl: tag_writer.py`
+- **[CM-6]** When analysis completes, the system shall automatically import the file using the best available tags. There shall be no manual approval gate. Files with low confidence shall be flagged for review but still imported. `Status: Done` `Impl: analysis/worker.py`
 
 ### Discovery to import — detailed flow
 
@@ -79,7 +121,7 @@ config:
   look: handDrawn
 ---
 sequenceDiagram
-    participant FS as Input Folder
+    participant FS as _input/&lt;root&gt;/
     participant D as Discovery
     participant DB as Database
     participant AI as AI Analysis
@@ -94,7 +136,7 @@ sequenceDiagram
         D-->>DB: Skip (don't import)
     else New file
         D->>DB: Insert file (status: analyzing)
-        D->>DB: Apply default root from input config
+        D->>DB: Set root from parent _input subdir
     end
 
     par Analysis (background)
@@ -120,8 +162,8 @@ sequenceDiagram
 
 ### Confidence scoring
 
-- **[CM-7]** Every imported file has a **confidence score** (0.0–1.0) reflecting how reliable its auto-assigned tags are.
-- **[CM-8]** Confidence is computed from tag sources, weighted by reliability:
+- **[CM-7]** The system shall assign every imported file a **confidence score** (0.0–1.0) reflecting how reliable its auto-assigned tags are. `Status: Done` `Impl: analysis/suggestions.py`
+- **[CM-8]** The system shall compute confidence from tag sources, weighted by reliability: `Status: Done` `Impl: analysis/worker.py`
 
 | Source | Weight | Example |
 |--------|--------|---------|
@@ -132,8 +174,8 @@ sequenceDiagram
 | AI vision/scene description | Low (0.3) | LLM-suggested event name |
 | Fallback defaults | Minimal (0.1) | `_unknown` placeholders |
 
-- **[CM-9]** The file-level confidence is the **weighted average** of its individual tag confidences, with path-relevant tags weighted more heavily than non-path tags.
-- **[CM-10]** The UI surfaces confidence prominently: color-coded indicators, sortable/filterable, so users can focus review time where it matters most.
+- **[CM-9]** The system shall compute file-level confidence as the **weighted average** of individual tag confidences, with path-relevant tags weighted more heavily than non-path tags. `Status: Done` `Impl: analysis/worker.py`
+- **[CM-10]** The UI shall surface confidence prominently via color-coded indicators, sortable and filterable, so users can focus review time where it matters most. `Status: Partial — confidence shown but not yet sortable/filterable`
 
 ---
 
@@ -145,7 +187,9 @@ All tags follow a `type:value` structure. Some types support nesting via `:`.
 
 #### `root:` — Top-level organizer
 
-Determines the first directory segment and which other tags are path-relevant. Inherited from the input folder config, overridable per-file during review.
+Determines the first directory segment and which other tags are path-relevant. Initially set from the `_input/<root>/` subdirectory the file arrives in, overridable per-file during review.
+
+- **[TX-2]** The system shall allow the user to override the `root:` tag per-file during review. `Status: Not Started`
 
 Values: `memory`, `music`, `book`, `podcast`, `movie`, `tv`, `comedy`
 
@@ -155,7 +199,7 @@ Every root has a `date` tag (YYYY-MM-DD). Derived from the best available source
 
 #### `favorite`
 
-Built-in tag. Also stored as a boolean column for fast sorting. Favorites always appear first in any listing.
+- **[TX-5]** The system shall store `favorite` as both a tag and a boolean column for fast sorting. Favorites shall always appear first in any listing. `Status: Partial — schema exists, no UI toggle` `Impl: schema.sql`
 
 #### General tags (no prefix)
 
@@ -172,7 +216,7 @@ live-recording
 
 These are computed from file properties and never stored as tags or written to file metadata:
 
-- **`class`** — file type (image, video, audio, document). Derived from file extension. Used for filtering, preview rendering, and AI pipeline selection.
+- **[TX-3]** The system shall derive **`class`** (image, video, audio, document) from the file extension. Class shall not be stored as a tag. `Status: Done` `Impl: discovery.py:classify_file`
 - **`month`** — `YYYY-MM`, derived from `date`. Used in `memory` path formula.
 - **`year`** — `YYYY`, derived from `date`. Used in `music`, `movie`, and `comedy` path formulas.
 
@@ -225,7 +269,7 @@ graph TD
 
 #### `name:` — Filename (all roots)
 
-Replaces the original filename in the output path (extension preserved). When absent, the original filename is kept.
+- **[TX-4]** When `name:` is set, the system shall replace the original filename in the output path (extension preserved). When `name:` is absent, the system shall keep the original filename. `Status: Done` `Impl: paths.py:_get_name`
 
 If two files share the same `name:` within the same directory scope, they auto-stack and get numeric suffixes "\-1", "\-2", which corresponds to the z-order in the stack. When a stack dissolves to one file, the suffix is removed.
 
@@ -243,7 +287,7 @@ event:Birthday Party:Cake Cutting
 
 Who is in the photo or video. Maps to face recognition embeddings. Not path-relevant.
 
-- **[TX-1]** A file can have multiple `person:` tags. The UI must support multi-value entry (e.g., chip-based input with add/remove) in both the queue and file detail views.
+- **[TX-1]** The system shall allow multiple `person:` tags per file. The UI shall support multi-value entry (e.g., chip-based input with add/remove) in both the review and file detail views. `Status: Done` `Impl: schema.sql, models.py`
 
 ```
 person:Eva
@@ -327,19 +371,19 @@ episode:05
 
 ### Tag dictionary
 
-The system maintains a registry of all known tags.
-
-- New tags are auto-registered on first use.
-- Powers autocomplete in the queue UI.
-- Tracks parent-child hierarchy for nested tags.
-- Filtering by a parent includes all children (e.g. `event:Hawaii Vacation` matches `:Snorkeling` too).
-- Browsable as a tree view grouped by type.
+- **[TX-6]** The system shall maintain a registry of all known tags with the following behaviors:
+  - When a new tag value is used, the system shall auto-register it in the dictionary.
+  - The system shall power autocomplete from the tag dictionary in the review UI.
+  - The system shall track parent-child hierarchy for nested tags.
+  - When filtering by a parent tag, the system shall include all children (e.g. `event:Hawaii Vacation` matches `:Snorkeling` too).
+  - The system shall provide a browsable tree view grouped by type.
+  `Status: Partial — autocomplete endpoint exists, no tree view` `Impl: api/tags.py`
 
 ---
 
 ## 3. Output Path Structure
 
-- **[OP-1]** Each root has a fixed path formula. The path is deterministically derived from tags. Path templates use the syntax described in §13.
+- **[OP-1]** The system shall derive each file's output path deterministically from its tags using the root's fixed path formula. Path templates use the syntax described in §13. `Status: Done` `Impl: paths.py:derive_path — 38 tests`
 
 ```mermaid
 ---
@@ -372,7 +416,7 @@ memories/{tag:month}/{tag:event*}/{tag:name?}<ext>
 | `name:Sunset Over Ocean` | `memories/2025-01/Sunset Over Ocean.jpg` |
 | `event:Hawaii Vacation:Snorkeling`, `name:Sunset Over Ocean` | `memories/2025-01/Hawaii Vacation/Snorkeling/Sunset Over Ocean.jpg` |
 
-- **[OP-2]** `month` (YYYY-MM) is derived from `date`, which is determined from the best available source: embedded media metadata (EXIF, QuickTime) over filesystem dates. If no date can be determined, use the discovery date. Images and videos from the same event sit side by side.
+- **[OP-2]** The system shall derive `month` (YYYY-MM) from `date`, determined from the best available source: embedded media metadata (EXIF, QuickTime) over filesystem dates. If no date can be determined, then the system shall use the discovery date. `Status: Partial — EXIF for images, not QuickTime` `Impl: paths.py`
 
 ### `root:music`
 
@@ -382,8 +426,8 @@ Songs. Organized by artist. Albums include release year for chronological browsi
 music/{tag:artist}/[{tag:year}] {tag:album?}/{tag:track} - {tag:name}<ext>
 ```
 
-- **[OP-3]** `track` is zero-padded (minimum 2 digits) for ordinal sorting. Extracted from embedded metadata. When no track number is available, the filename is the name alone (no "\-" separator).
-- **[OP-4]** For Various Artists compilations, see [AI-9]. The artist is "Various Artists" and the original filename is preserved as-is (it typically encodes `## - Artist - Track` which is more informative than just the title).
+- **[OP-3]** The system shall zero-pad `track` to a minimum of 2 digits for ordinal sorting. When no track number is available, the system shall use the name alone (no "\-" separator). `Status: Done` `Impl: paths.py:_derive_music, defaults.py:extract_audio_metadata`
+- **[OP-4]** When embedded metadata contains `albumartist = "Various Artists"`, the system shall set `artist:Various Artists` and preserve the original filename as-is. `Status: Done` `Impl: defaults.py:_defaults_music, paths.py:_derive_music`
 
 | Tags | Output path |
 |---|---|
@@ -476,7 +520,7 @@ comedy/{tag:artist}/[{tag:year}] {tag:name}<ext>
 
 ### Tag value casing
 
-- **[OP-5]** Tag values use **Title Case** with spaces as word separators. Minor words (a, an, the, and, or, of, in, on, etc.) stay lowercase unless first or last.
+- **[OP-5]** The system shall normalize tag values to **Title Case** with spaces as word separators. Minor words (a, an, the, and, or, of, in, on, etc.) shall stay lowercase unless first or last. `Status: Done` `Impl: defaults.py:slugify, defaults.py:title_case — 12 tests`
 
 ```
 artist:Pink Floyd
@@ -490,15 +534,15 @@ Defaults derived from embedded metadata or folder structure are automatically co
 
 ### Year is metadata, not part of name/album
 
-- **[OP-6]** The `[year]` in output paths (e.g., `[1973] Dark Side of the Moon`, `The Dark Knight [2008]`) is derived automatically from the `year` tag. Users enter the name/album without a year — the year is a separate tag. This keeps names clean in the UI while producing chronologically sortable output paths.
+- **[OP-6]** The system shall derive `[year]` in output paths automatically from the `year` tag. Users enter the name/album without a year — the year is a separate tag. `Status: Done` `Impl: paths.py:_derive_music`
 
 ### General rules
 
-- **[OP-7]** When `name:` is set, it replaces the filename. When absent, the original filename is kept.
-- **[OP-8]** Missing required path segments use `_unknown` as a placeholder.
-- **[OP-9]** Duplicate filenames within the same directory scope auto-stack with numeric suffixes ("\-1", "\-2", etc.).
-- **[OP-10]** When a stack dissolves to one file, the suffix is removed.
-- **[OP-11]** Changing any path-affecting tag on an imported file triggers relocation. Empty parent directories are cleaned up.
+- **[OP-7]** When `name:` is set, the system shall replace the filename. When `name:` is absent, the system shall keep the original filename. `Status: Done` `Impl: paths.py:_get_name`
+- **[OP-8]** If a required path segment is missing, then the system shall use `_unknown` as a placeholder. `Status: Done` `Impl: paths.py:_first_or`
+- **[OP-9]** When duplicate filenames occur within the same directory scope, the system shall auto-stack them with numeric suffixes ("\-1", "\-2", etc.). `Status: Done` `Impl: api/queue.py:_resolve_collision`
+- **[OP-10]** When a stack dissolves to one file, the system shall remove the numeric suffix. `Status: Not Started`
+- **[OP-11]** When any path-affecting tag changes on an imported file, the system shall relocate the file and clean up empty parent directories. `Status: Done` `Impl: api/tags.py:save_tags`
 
 ---
 
@@ -508,21 +552,21 @@ Files are auto-imported as soon as analysis completes (see §1). The review UI i
 
 ### Import status
 
-- **[MQ-1]** The sidebar shows an **import progress indicator**: files analyzing, recently imported count, and a badge for files needing review (confidence below threshold).
-- **[MQ-2]** Import is fully unattended. A large library pointed at Pinpoint for the first time should be fully organized within hours, not weeks.
+- **[MQ-1]** While files are being processed, the sidebar shall show an **import progress indicator**: files analyzing, recently imported count, and a badge for files needing review (confidence below threshold). `Status: Partial — count on page, no sidebar`
+- **[MQ-2]** The system shall import files fully unattended. A large library pointed at Pinpoint for the first time shall be fully organized within hours, not weeks. `Status: Done`
 
 ### Needs Review view
 
-- **[MQ-3]** Accessible via sidebar. Shows imported files sorted by **confidence ascending** (lowest confidence first), so the most uncertain files get attention first.
-- **[MQ-4]** Filterable by: root, file class, confidence range, date range, specific missing tags.
-- **[MQ-5]** Each file shows: preview thumbnail, current tags (with source indicators), confidence score, and the current output path.
+- **[MQ-3]** The Needs Review view shall be accessible via sidebar and shall show imported files sorted by **confidence ascending** (lowest confidence first). `Status: Partial — queue exists but sorted newest-first, not by confidence`
+- **[MQ-4]** The Needs Review view shall be filterable by: root, file class, confidence range, date range, specific missing tags. `Status: Partial — root + class filters on queue`
+- **[MQ-5]** Each file in the Needs Review view shall show: preview thumbnail, current tags (with source indicators), confidence score, and the current output path. `Status: Done` `Impl: templates/queue.html`
 
 ### Single-file review
 
-- **[MQ-6]** Full-size preview (image viewer, video player, audio player).
-- **[MQ-7]** File metadata: filename, size, dimensions/duration, creation date, source path.
-- **[MQ-8]** **Live preview of the output path**, updating in real time as tags are edited.
-- **[MQ-9]** Tag source indicators show where each default came from:
+- **[MQ-6]** The single-file review shall provide a full-size preview (image viewer, video player, audio player). `Status: Done` `Impl: templates/queue.html, api/files.py`
+- **[MQ-7]** The single-file review shall display file metadata: filename, size, dimensions/duration, creation date, source path. `Status: Done` `Impl: templates/queue.html`
+- **[MQ-8]** While the user edits tags, the system shall display a **live preview of the output path** that updates in real time. `Status: Done` `Impl: api/tags.py:preview_path`
+- **[MQ-9]** The system shall show tag source indicators for each default: `Status: Done` `Impl: templates/queue.html — AI badge + source labels`
 
 | Indicator | Meaning |
 |-----------|---------|
@@ -532,15 +576,15 @@ Files are auto-imported as soon as analysis completes (see §1). The review UI i
 | `ai` | Suggested by local AI (vision model, face detection) |
 | `manual` | Entered or edited by the user |
 
-- **[MQ-10]** Users can edit any tag. Edits trigger immediate relocation if path-relevant tags changed. Confidence for edited tags is set to 1.0 (manual = certain).
+- **[MQ-10]** When a user edits a tag, the system shall trigger immediate relocation if path-relevant tags changed. The system shall set confidence for edited tags to 1.0 (manual = certain). `Status: Done` `Impl: api/tags.py:save_tags`
 
 ### Batch review
 
 Preview an entire folder or group at once. Useful for bulk refinement.
 
-- **[MQ-11]** Table/list view: filename, current tags, confidence, output path.
-- **[MQ-12]** Bulk tag application: select multiple files, apply a tag to all (e.g., set `event:` for an entire folder of photos).
-- **[MQ-13]** Individual rows expandable for single-file editing.
+- **[MQ-11]** The batch review shall provide a table/list view showing: filename, current tags, confidence, output path. `Status: Not Started`
+- **[MQ-12]** When the user selects multiple files, the system shall support bulk tag application (e.g., set `event:` for an entire folder of photos). `Status: Not Started`
+- **[MQ-13]** The batch review shall allow individual rows to expand for single-file editing. `Status: Not Started`
 
 ### Removing files
 
@@ -585,11 +629,11 @@ Which tags are "expected" depends on the root:
 
 ### Exact duplicates
 
-- **[DS-1]** Content hash at discovery. Duplicates are never imported.
+- **[DS-1]** When discovering a file, the system shall compute a content hash (SHA-256). If the hash matches an existing file, then the system shall skip the duplicate (never import it). `Status: Done` `Impl: discovery.py:hash_file`
 
 ### Perceptual similarity (images only)
 
-- **[DS-2]** Perceptual hash at discovery. Files below a configurable hamming distance auto-stack.
+- **[DS-2]** When discovering an image, the system shall compute a perceptual hash. When two files have a hamming distance below a configurable threshold, the system shall auto-stack them. `Status: Done` `Impl: 0.2/1-hybrid discovery.py:_compute_phash, _find_phash_stack`
 
 ### Name-collision stacking
 
@@ -633,7 +677,7 @@ flowchart TD
 
 ### Background worker
 
-- **[AI-0]** Processes discovered files and **auto-imports them** once analysis completes. This is the core import pipeline — there is no manual gate.
+- **[AI-0]** When analysis completes for a discovered file, the system shall auto-import it using the best available tags. There shall be no manual gate. `Status: Done` `Impl: analysis/worker.py:run_analysis`
 - Processes files newest first. Degrades gracefully: if any analysis tool is unavailable, skip it and proceed with whatever tags are available.
 - Files are imported even if confidence is low — `_unknown` placeholders are acceptable. The user refines later.
 
@@ -657,9 +701,9 @@ flowchart TD
 
 #### Metadata extraction
 
-- **[AI-1]** Read embedded tags (ID3, Vorbis, MP4 atoms, etc.).
-- **[AI-2]** Extract: title, artist, album, year, genre, track number, album art.
-- **[AI-3]** Images in directories that contain audio files (cover art, booklet scans) are auto-skipped during discovery.
+- **[AI-1]** The system shall read embedded audio tags (ID3, Vorbis, MP4 atoms, etc.) during analysis. `Status: Done` `Impl: defaults.py:extract_audio_metadata`
+- **[AI-2]** The system shall extract: title, artist, album, year, genre, track number, and album art from audio metadata. `Status: Done` `Impl: defaults.py:extract_audio_metadata`
+- **[AI-3]** When discovering files in directories that contain audio files, the system shall auto-skip images (cover art, booklet scans). `Status: Done` `Impl: discovery.py:_walk_files`
 
 #### Free API lookup
 
@@ -699,14 +743,14 @@ For files in `root:movie`, `root:tv`, and `root:comedy` — attempt to identify 
 
 ### Tag resolution and auto-import
 
-- **[AI-4]** Analysis results are stored as tags with source and confidence metadata. The best available value for each tag field is selected automatically: embedded metadata > API lookup > filename parsing > AI suggestion > `_unknown`.
-- **[AI-5]** Once analysis completes, the file is auto-imported: tags are persisted, the output path is derived, and the file is moved to the output tree. The file's overall confidence score is recorded.
-- **[AI-6]** Unknown faces → stored as unidentified face regions. When the user later labels a face, the system uses that label for future recognition across all files.
-- **[AI-7]** The review UI shows analysis source for each tag so users can see why a tag was assigned and override with confidence.
+- **[AI-4]** The system shall store analysis results as tags with source and confidence metadata. The system shall select the best available value for each tag field automatically: embedded metadata > API lookup > filename parsing > AI suggestion > `_unknown`. `Status: Done` `Impl: analysis/suggestions.py, schema.sql:suggestions`
+- **[AI-5]** When analysis completes, the system shall auto-import the file: persist tags, derive the output path, and move the file to the output tree with an overall confidence score. `Status: Done` `Impl: analysis/worker.py`
+- **[AI-6]** When a face is detected but unrecognized, the system shall store it as an unidentified face region. When the user later labels a face, the system shall use that label for future recognition across all files. `Status: Not Started`
+- **[AI-7]** The review UI shall show the analysis source for each tag so users can see why a tag was assigned and override with confidence. `Status: Done` `Impl: web/routes.py, templates/queue.html`
 
 ### Filename parsing patterns
 
-- **[AI-8]** The following filename patterns should be recognized across roots:
+- **[AI-8]** The system shall recognize the following filename patterns across roots: `Status: Done` `Impl: analysis/tmdb.py`
 
 | Pattern | Example | Extracted tags |
 |---------|---------|----------------|
@@ -720,7 +764,7 @@ For files in `root:movie`, `root:tv`, and `root:comedy` — attempt to identify 
 
 ### Various Artists handling
 
-- **[AI-9]** When embedded metadata contains `albumartist = "Various Artists"` (or equivalent), set `artist:Various Artists` and preserve the original filename as-is (it typically encodes `## - Artist - Track` which is more informative than just the title).
+- **[AI-9]** When embedded metadata contains `albumartist = "Various Artists"` (or equivalent), the system shall set `artist:Various Artists` and preserve the original filename as-is. `Status: Done` `Impl: defaults.py:_defaults_music`
 
 ---
 
@@ -730,23 +774,24 @@ The home page. The default landing experience is searching and browsing the libr
 
 ### Search
 
-- **[LB-1]** Full-text search bar at the top of the home page. Searches across filenames, tag values, metadata, and AI descriptions.
-- **[LB-1a]** Search is **predictive**: results auto-update after the user types 2 or more characters, with a short debounce delay (~300ms). No submit button required — typing is the trigger.
-- **[LB-2]** Results displayed as a grid of **folders** (see below) and individual files.
-- **[LB-3]** Filters narrow results:
+- **[LB-1]** The home page shall provide a full-text search bar that searches across filenames, tag values, metadata, and AI descriptions. `Status: Partial — FTS5 in schema, LIKE search wired, FTS not wired`
+- **[LB-1a]** While the user types 2 or more characters, the system shall auto-update search results with a short debounce delay (~300ms). No submit button shall be required. `Status: Not Started`
+- **[LB-2]** The system shall display search results as a grid of **folders** (see below) and individual files. `Status: Not Started`
+- **[LB-3]** The system shall provide filters to narrow results:
   - Root (memories, music, tv, etc.).
   - Class (image, video, audio).
   - Date range.
   - Person / Artist / Author (context-appropriate label per root).
   - Tags — multiple = AND. Parent tags include children.
+  `Status: Partial — root + class filters on queue`
 
 ### Folders
 
 A **folder** is a virtual grouping of imported files, derived from the primary grouping segment of each root's path formula. Each folder has a **name** and a **hero image**.
 
-- **[LB-4]** Folders are the primary browsing unit. The home page shows folders as cards (hero image + name).
-- **[LB-4a]** Clicking a folder card **drills down** into that folder, showing its subfolders and files. Folder browsing is hierarchical with breadcrumb navigation — it does not jump to a flat library view.
-- **[LB-5]** The hero image is the first image file in the folder (by date), or the stack cover if one exists. Falls back to a file-type icon when no image is available.
+- **[LB-4]** The home page shall show folders as cards (hero image + name) as the primary browsing unit. `Status: Not Started`
+- **[LB-4a]** When the user clicks a folder card, the system shall drill down into that folder, showing subfolders and files with breadcrumb navigation. `Status: Not Started`
+- **[LB-5]** The system shall use the first image file (by date) as the hero image, or the stack cover if one exists. If no image is available, then the system shall fall back to a file-type icon. `Status: Not Started`
 
 | Root | Folder grouping tags | Grouping depth | Example folder name |
 |------|---------------------|----------------|-------------------|
@@ -758,52 +803,50 @@ A **folder** is a virtual grouping of imported files, derived from the primary g
 | book | `author:` | 1 | "Tolkien" |
 | comedy | `artist:` | 1 | "John Mulaney" |
 
-- **[LB-4b]** The **grouping depth** determines how many path segments from the output tree are collapsed into a single folder card on the home page. Files deeper than the grouping depth appear as contents within the folder. Files at or above the grouping depth appear as standalone items alongside folders.
+- **[LB-4b]** The system shall collapse path segments up to the **grouping depth** into a single folder card. Files deeper than the grouping depth shall appear as contents within the folder. Files at or above the grouping depth shall appear as standalone items. `Status: Not Started`
 
-- **[LB-6]** Files without a grouping tag (e.g., a movie with no `series:`) appear as standalone items alongside folders.
-- **[LB-7]** Clicking a folder opens it to show its contents — individual files with contextual icons:
+- **[LB-6]** When a file lacks a grouping tag (e.g., a movie with no `series:`), the system shall display it as a standalone item alongside folders. `Status: Not Started`
+- **[LB-7]** When the user clicks a folder, the system shall show its contents as individual files with contextual icons:
   - Audio: play icon (&#9654;) — click to play inline.
   - Images: image icon — click to open/preview.
   - Video: film icon — click to open/preview.
-- **[LB-8]** Browse views offer **"Open in Finder"** (macOS) / **"Open in file manager"** actions at every level: folder cards, subfolder headings, and individual files. This bridges the Pinpoint UI with the native filesystem.
+  `Status: Partial — tree view exists in templates/library.html`
+- **[LB-8]** The system shall offer **"Open in Finder"** (macOS) / **"Open in file manager"** actions at every level: folder cards, subfolder headings, and individual files. `Status: Not Started`
 - Favorites marked with a star indicator. Favorites sort first.
 
 ### What's New
 
-- **[LB-9]** Shows recently imported files, sorted by `imported_at` descending. Useful when input folders are shared externally (e.g. a NAS, a synced folder, a partner's photo dump) — the user can see what arrived since they last checked.
-- **[LB-10]** Grouped by import date (today, yesterday, this week, earlier). Each entry shows the file preview, assigned tags, confidence, and root.
+- **[LB-9]** The What's New view shall show recently imported files, sorted by `imported_at` descending. `Status: Not Started`
+- **[LB-10]** The What's New view shall group entries by import date (today, yesterday, this week, earlier). Each entry shall show the file preview, assigned tags, confidence, and root. `Status: Not Started`
 
 ### On This Day
 
-- Files from date-based roots (`memories`) matching today's month+day across all years.
-- Grouped by year. Favorites first.
+- **[LB-11]** The system shall provide an "On This Day" view showing files from date-based roots (`memories`) matching today's month+day across all years, grouped by year with favorites first. `Status: Not Started`
 
 ### Tag dictionary browser
 
-- Tree view of all tags, grouped by type.
-- Usage counts. Click to filter library.
-- Expandable hierarchy.
+- **[LB-12]** The system shall provide a tag dictionary browser as a tree view grouped by type, with usage counts. When the user clicks a tag, the system shall filter the library to that tag. `Status: Not Started`
 
 ---
 
 ## 8. Favorites
 
-- Built-in tag + boolean column for fast sorting.
-- Star toggle on cards and detail views.
-- Always sort first. Dedicated sidebar view.
+- **[FV-1]** The system shall store `favorite` as a built-in tag and boolean column for fast sorting. `Status: Done` `Impl: schema.sql`
+- **[FV-2]** The UI shall provide a star toggle on cards and detail views. `Status: Not Started`
+- **[FV-3]** The system shall always sort favorites first in any listing. The system shall provide a dedicated favorites view in the sidebar. `Status: Not Started`
 
 ---
 
 ## 9. File Detail View
 
-- Full-size preview (image/video/audio) in overlay.
-- Sidebar: favorite toggle, metadata, all tags (editable with source indicators per [MQ-9]), confidence score, face regions for `person:` tags.
-- **"Show in Finder"** button to open the file's location in the native file manager. Users manage files (delete, move) through the OS; the output monitor (§11) handles the rest.
+- **[FD-3]** The file detail view shall provide a full-size preview (image/video/audio) in overlay. `Status: Not Started`
+- **[FD-4]** The file detail sidebar shall show: favorite toggle, metadata, all tags (editable with source indicators per [MQ-9]), confidence score, and face regions for `person:` tags. `Status: Partial — tag editor exists` `Impl: web/routes.py:file_detail_page, templates/file_detail.html`
+- **[FD-5]** The file detail view shall provide a **"Show in Finder"** button to open the file's location in the native file manager. `Status: Not Started`
 
 ### Preview serving
 
-- **[FD-1]** The server exposes a `/preview/:id` endpoint that serves file content for in-browser display. For imported files, serves from `output_path`. For files still being analyzed, serves from `source_path`.
-- **[FD-2]** Preview supports streaming for large video/audio files (HTTP range requests).
+- **[FD-1]** The server shall expose a `/preview/:id` endpoint that serves file content for in-browser display. While a file is imported, the system shall serve from `output_path`. While a file is still analyzing (not yet moved), the system shall serve from the file's current location under `_input/<root>/`. `Status: Not Started`
+- **[FD-2]** The preview endpoint shall support streaming for large video/audio files via HTTP range requests. `Status: Not Started`
 
 ---
 
@@ -811,19 +854,21 @@ A **folder** is a virtual grouping of imported files, derived from the primary g
 
 ### Core entities
 
-- **files** — every known file. Tracks: `source_path`, `output_path`, lifecycle status (`analyzing`/`imported`/`missing`/`drifted`), root, class, content hash, perceptual hash, temporal metadata (`creation_date`, `discovery_date`, `imported_at`), favorite flag, stack membership, analysis state, **confidence score** (0.0–1.0), `last_indexed_at` (timestamp of last audit — validates input tags and output filename consistency).
-- **tags** — tag dictionary. Tracks: full name (e.g. `event:hawaii-vacation:snorkeling`), type (root/event/name/person/artist/author/album/title/show/season/series/general), whether built-in.
-- **file_tags** — associates files with tags. Tracks: region (face bounding box if applicable), when applied, **source** (`metadata`/`filename`/`api`/`ai`/`manual`), **confidence** (0.0–1.0 for this specific tag assignment).
-- **suggestions** — AI analysis results before they become tags. Tracks: target file, kind, suggested value, confidence, region, status (pending/applied/dismissed). Once auto-import applies a suggestion, it becomes a file_tag.
-- **stacks** — groups of similar or colliding files. Tracks: cover file, member ordering.
-- **known_faces** — labeled face embeddings for recognition. Tracks: label, embedding vector, source reference.
+- **[DM-2]** The system shall maintain the following core tables: `Status: Done` `Impl: schema.sql, database.py`
+  - **files** — every known file. Tracks: `output_path`, lifecycle status (`analyzing`/`imported`/`rejected`/`missing`/`drifted`), root, class, content hash, perceptual hash, temporal metadata (`creation_date`, `discovery_date`, `imported_at`), favorite flag, stack membership, analysis state, **confidence score** (0.0–1.0), `last_indexed_at` (timestamp of last audit — validates input tags and output filename consistency). Files in the `rejected` state have `output_path` pointing into `_input/_rejections/`.
+  - **tags** — tag dictionary. Tracks: full name (e.g. `event:hawaii-vacation:snorkeling`), type (root/event/name/person/artist/author/album/title/show/season/series/general), whether built-in.
+  - **file_tags** — associates files with tags. Tracks: region (face bounding box if applicable), when applied, **source** (`metadata`/`filename`/`api`/`ai`/`manual`), **confidence** (0.0–1.0 for this specific tag assignment).
+- **[DM-3]** The system shall maintain the following supporting tables: `Status: Done` `Impl: schema.sql`
+  - **suggestions** — AI analysis results before they become tags. Tracks: target file, kind, suggested value, confidence, region, status (pending/applied/dismissed). Once auto-import applies a suggestion, it becomes a file_tag.
+  - **stacks** — groups of similar or colliding files. Tracks: cover file, member ordering.
+  - **known_faces** — labeled face embeddings for recognition. Tracks: label, embedding vector, source reference.
 - **full-text search index** — across filenames, tag names, metadata, AI descriptions.
 
 ### Action log
 
-- **[DM-1]** **actions** — append-only audit trail of every state-changing operation.
+- **[DM-1]** The system shall maintain an **actions** table as an append-only audit trail of every state-changing operation. `Status: Done` `Impl: actions.py:log_action, all 17 verbs in models.py`
   - timestamp
-  - action verb: `discover`, `auto_import`, `delete`, `tag_add`, `tag_remove`, `tag_edit`, `favorite`, `unfavorite`, `relocate`, `rename`, `move`, `missing`, `stack_create`, `stack_reorder`, `stack_dissolve`
+  - action verb: `discover`, `auto_import`, `reject`, `delete`, `tag_add`, `tag_remove`, `tag_edit`, `favorite`, `unfavorite`, `relocate`, `rename`, `move`, `missing`, `stack_create`, `stack_reorder`, `stack_dissolve`
   - file id (nullable for system-level actions)
   - detail payload — action-specific context, e.g.:
     - `auto_import`: source path, destination path, confidence score
@@ -842,14 +887,14 @@ Not used for undo — just a queryable log for debugging and manual error recove
 
 ## 11. Output Monitoring
 
-The output directory is a regular folder. Users may interact with it directly via Finder, terminal, or other tools. Pinpoint watches the output tree and responds to external changes.
+The library is a regular folder. Users may interact with it directly via Finder, terminal, or other tools. Pinpoint watches the library and responds to external changes. The output trees (`memories/`, `music/`, …) and `_input/<root>/` are watched; `_input/_rejections/` is not re-scanned (see [CM-A]).
 
 ### File renamed
 
-- **[OM-1]** Detect via filesystem watcher (file at known `output_path` disappears, new file appears in same directory with same size/hash).
-- **[OM-2]** Update `output_path` in the database.
-- **[OM-3]** Log a `rename` action with old and new paths.
-- **[OM-4]** **Do not** reverse-derive tags from the new filename. The rename is accepted as-is — tags remain the source of truth. The file is now "drifted" from its tag-derived path.
+- **[OM-1]** When a file at a known `output_path` disappears and a new file with the same size/hash appears in the same directory, the system shall detect this as a rename. `Status: Not Started`
+- **[OM-2]** When a rename is detected, the system shall update `output_path` in the database. `Status: Not Started`
+- **[OM-3]** When a rename is detected, the system shall log a `rename` action with old and new paths. `Status: Not Started`
+- **[OM-4]** When a file is renamed externally, the system shall **not** reverse-derive tags from the new filename. Tags remain the source of truth. The file shall be marked as "drifted." `Status: Not Started`
 - Optionally surface drifted files in the UI so the user can reconcile (re-tag to match, or trigger a relocate to snap back).
 
 ### File moved
@@ -861,21 +906,21 @@ The output directory is a regular folder. Users may interact with it directly vi
 
 ### File deleted externally
 
-- **[OM-5]** Detect via watcher (file at known `output_path` no longer exists, no matching hash found elsewhere).
-- **[OM-6]** Mark file as `missing` in the database (not deleted from DB — preserve the metadata and action history).
-- **[OM-7]** Log a `missing` action.
+- **[OM-5]** When a file at a known `output_path` no longer exists and no matching hash is found elsewhere, the system shall detect this as an external delete. `Status: Not Started`
+- **[OM-6]** When an external delete is detected, the system shall mark the file as `missing` (not deleted from DB — preserve metadata and action history). `Status: Not Started`
+- **[OM-7]** When an external delete is detected, the system shall log a `missing` action. `Status: Not Started`
 ### Missing files view
 
-- **[OM-8]** Missing files are surfaced in a dedicated view accessible from the sidebar (shown only when missing files exist).
-- **[OM-9]** Each entry shows: the file's last known path, root, tags, and when it went missing.
-- **[OM-10]** Users can **dismiss** individual missing records (removes the file from the database) or **dismiss all** to clear the list. No confirmation dialog — dismissed records can be seen in the action log if needed.
+- **[OM-8]** While missing files exist, the system shall surface them in a dedicated view accessible from the sidebar. `Status: Not Started`
+- **[OM-9]** Each missing file entry shall show: the file's last known path, root, tags, and when it went missing. `Status: Not Started`
+- **[OM-10]** When the user dismisses a missing record, the system shall remove the file from the database. The system shall support "dismiss all." No confirmation dialog — dismissed records shall be visible in the action log. `Status: Not Started`
 
 ### New file added to output
 
 - Detect via watcher (unknown file appears in output tree).
 - Treat it like a discovery: hash it, check for duplicates, run through the analysis pipeline.
 - Attempt to reverse-derive tags from the path (e.g. a file at `music/pink-floyd/[1973] dark-side-of-the-moon/time.flac` → derive `root:music`, `artist:pink-floyd`, `album:dark-side-of-the-moon`, `year:1973`, `name:time`).
-- Since the file is already in the output tree, auto-import registers it as imported in-place (no copy/move needed).
+- Since the file is already in the output tree, auto-import registers it as imported in-place (no move needed).
 
 ### Periodic verification
 
@@ -923,74 +968,88 @@ Pinpoint never invents its own metadata format. Every tag is stored using an exi
 | `class` | Computed | Derived from file extension (not stored) |
 | `month`, `year` | Computed | Derived from `date` (not stored) |
 
-- **[TP-1]** Tags with native metadata fields are written to those fields directly. Pinpoint reads from and writes to native fields.
-- **[TP-2]** Tags that are format-agnostic (`root`, `favorite`, general tags) are stored as extended attributes.
-- **[TP-3]** Tags derivable from the output path or the file itself are never written — they are reconstructed on read.
-- **[TP-4]** On auto-import (or manual tag edit), native metadata and xattrs are written before the file is moved to the output tree.
-- **[TP-5]** On tag change (imported file), metadata is rewritten and the file is relocated if path-relevant tags changed.
+- **[TP-1]** The system shall write tags with native metadata fields to those fields directly and read from the same fields. `Status: Done` `Impl: tag_writer.py:_write_audio_tags, _write_image_tags`
+- **[TP-2]** The system shall store format-agnostic tags (`root`, `favorite`, general tags) as extended attributes. `Status: Done` `Impl: tag_writer.py:_write_xattrs`
+- **[TP-3]** The system shall not write tags derivable from the output path or the file itself — they shall be reconstructed on read. `Status: Done` `Impl: tag_writer.py:PATH_DERIVED_TAGS, COMPUTED_TAGS`
+- **[TP-4]** When auto-importing a file (or on manual tag edit), the system shall write native metadata and xattrs before moving the file to the output tree. `Status: Done` `Impl: api/queue.py:accept_file`
+- **[TP-5]** When a tag changes on an imported file, the system shall rewrite metadata and relocate the file if path-relevant tags changed. `Status: Done` `Impl: api/tags.py:save_tags`
 
 ### Extended attributes
 
-- **[TP-6]** On macOS, mirror **low-cardinality** tags to `com.apple.metadata:_kMDItemUserTags` so they appear as Finder tags and are indexed by Spotlight. High-cardinality values stay in xattrs only to avoid degrading Spotlight indexing performance.
-  - **[TP-6a]** Always written: `pinpoint` (app identifier) and `pinpoint:<root>` (category).
-  - **[TP-6b]** Promoted fields: `person` — included because most users tag a small set of known people (dozens, not thousands), and Spotlight queries like "find pictures of Eva" are a key workflow.
-  - **[TP-6c]** Not promoted: `artist`, `album`, `event`, `author`, `show`, and other high-cardinality fields. These are queryable via individual xattrs (`user.pinpoint.<field>`) but not written as Finder tags.
-- **[TP-7]** On discovery, import existing Finder tags / xattrs as suggestions.
-- **[TP-8]** On Linux, uses the `user.*` xattr namespace. On macOS, uses both `user.pinpoint.*` and the Finder tag namespace. Each tag is written as an individual xattr (`user.pinpoint.<field>`) for per-file queryability regardless of platform.
+- **[TP-6]** Where running on macOS, the system shall mirror **low-cardinality** tags to `com.apple.metadata:_kMDItemUserTags` so they appear as Finder tags and are indexed by Spotlight. `Status: Done` `Impl: tag_writer.py:_write_finder_tags`
+  - **[TP-6a]** The system shall always write: `pinpoint` (app identifier) and `pinpoint:<root>` (category).
+  - **[TP-6b]** The system shall promote `person` to Finder tags — included because most users tag a small set of known people.
+  - **[TP-6c]** The system shall not promote `artist`, `album`, `event`, `author`, `show`, and other high-cardinality fields to Finder tags. These shall be queryable via individual xattrs only.
+- **[TP-7]** When discovering a file, the system shall import existing Finder tags / xattrs as suggestions. `Status: Not Started`
+- **[TP-8]** Where running on Linux, the system shall use the `user.*` xattr namespace. Where running on macOS, the system shall use both `user.pinpoint.*` and the Finder tag namespace. `Status: Done` `Impl: tag_writer.py:_write_xattrs`
 
 ### Database rebuild
 
-- **[TP-9]** `pinpoint rebuild` scans the output directory, reads native metadata + xattrs + path structure from every imported file, and reconstructs the `files`, `tags`, and `file_tags` tables.
-- **[TP-10]** Action history is not recoverable (append-only log is database-only).
-- **[TP-11]** Rebuild cross-checks: a file's directory position should be consistent with its embedded tags. Inconsistencies are flagged as drifted.
+- **[TP-9]** When the user runs `pinpoint rebuild`, the system shall scan the output directory, read native metadata + xattrs + path structure from every imported file, and reconstruct the `files`, `tags`, and `file_tags` tables. `Status: Not Started`
+- **[TP-10]** The system shall not attempt to recover action history during rebuild (append-only log is database-only). `Status: Done` `Impl: actions.py`
+- **[TP-11]** When rebuilding, the system shall cross-check each file's directory position against its embedded tags. If the position is inconsistent with the tags, then the system shall flag the file as drifted. `Status: Not Started`
 
 ---
 
 ## 13. Configuration
 
-Minimal. Inputs with their default root, and an output path.
+Minimal. A library path. Everything else has sensible defaults in code.
 
 ```yaml
-inputs:
-  - path: ~/Pictures
-    root: memory
-  - path: ~/DCIM
-    root: memory
-  - path: ~/Music
-    root: music
-  - path: ~/Audiobooks
-    root: book
-  - path: ~/Downloads/podcasts
-    root: podcast
-  - path: ~/Movies
-    root: movie
-
-output: ~/.pinpoint/files
-
-import_mode: copy   # "copy" (default) or "move"
+library: /Volumes/data/files
 ```
 
-Everything else has sensible defaults in code. Hot-reloads on file change.
+The library directory holds both the `_input/` drop tree and the per-root output trees. Pinpoint creates `_input/<root>/` and `_input/_rejections/` on startup if they don't exist.
 
-### Import mode
+- **[CF-LIB]** The system shall require a `library:` path in config. There is no default — the user shall pick a location (typically an external drive). The library shall not default to the user's home directory. `Status: Not Started`
+- **[CF-10]** When the config file changes on disk, the system shall hot-reload the configuration without requiring a restart. `Status: Partial — ConfigHolder exists, watcher not connected` `Impl: config.py`
 
-- **[CF-7]** `import_mode: copy` (default) — source files are preserved. The output tree is fully disposable — delete it and re-import at any time. See [CM-11]–[CM-13].
-- **[CF-8]** `import_mode: move` — source files are removed after import. This is an expert setting. On first use, the system logs a warning: *"Move mode enabled — source files will be deleted after import. Source files cannot be recovered if the output is deleted. Consider using copy mode unless you are disk-constrained."*
-- **[CF-9]** `pinpoint cleanup-sources` — a CLI command that removes source files for all successfully imported files (in `copy` mode). Provides a summary and file count before acting, requires explicit confirmation. This is the recommended way to reclaim disk space: run in `copy` mode until satisfied, then clean up.
+### Onboarding
+
+The preferred onboarding pattern: pick a library root, then move existing files into the appropriate `_input/<root>/` subdirectory. From there, pinpoint takes over.
+
+```mermaid
+---
+config:
+  look: handDrawn
+---
+sequenceDiagram
+    participant U as User
+    participant FS as File System
+    participant L as &lt;library&gt;/_input/&lt;root&gt;/
+    participant P as Pinpoint
+    participant O as &lt;library&gt;/&lt;root output tree&gt;/
+
+    U->>FS: Pick library root (e.g. /Volumes/data/files)
+    P->>L: On first run, create _input/&lt;root&gt;/ and _input/_rejections/
+    U->>L: mv ~/old/music/* /Volumes/data/files/_input/music/
+    U->>L: mv ~/old/photos/* /Volumes/data/files/_input/memory/
+    L-->>P: Watcher detects new files
+    P->>P: Hash, dedup, analyze, derive path
+    alt Successful import
+        P->>O: Move file to derived output path
+    else Unsupported / failure
+        P->>L: Move file to _input/_rejections/
+    end
+```
+
+A file is "under pinpoint control" the moment it lands in `_input/`. Whether the user moved it there from another disk, copied it, AirDropped it, or piped a download into it — that's their concern, not pinpoint's.
+
+- **[CF-OB]** The system shall not require any pre-population of `_input/<root>/`. An empty library is valid and produces an empty output tree. `Status: Not Started`
+
+### Future: bare-drop classifier inference
+
+- **[CF-FUT-1]** *(Future)* When a file is dropped at the root of `_input/` (not inside a `_input/<root>/` subdirectory), the system shall infer the root from file class and content (mp3 → music, jpg → memory, …). Where inference is ambiguous, the system shall move the file to `_input/_rejections/` with a reason. `Status: FUT`
 
 ### System paths
 
-- **[CF-1]** **Data directory**: `~/.pinpoint/` by default. Stores the database, thumbnails, and other system data. Configurable via `data_dir:` in config or `PINPOINT_DATA_DIR` environment variable.
-- **[CF-2]** **Config file location**: `~/.pinpoint/config.yaml`. Overridable via `--config <path>` or `PINPOINT_CONFIG` environment variable.
-- **[CF-3]** **Path resolution**: all relative paths in the config file resolve relative to the **config file's parent directory**, not the current working directory. This ensures `--config path/to/config.yaml` works predictably regardless of where the command is run. `~` expands to the user's home directory.
+- **[CF-1]** The system shall store its database, thumbnails, and system data in a **data directory** defaulting to `~/.pinpoint/`. The data directory shall be configurable via `data_dir:` in config or `PINPOINT_DATA_DIR` environment variable. The data directory is separate from the library — only the database and system state live here. `Status: Done` `Impl: config.py`
+- **[CF-2]** The system shall load configuration from `~/.pinpoint/config.yaml` by default, overridable via `--config <path>` or `PINPOINT_CONFIG` environment variable. `Status: Done` `Impl: config.py, __main__.py`
+- **[CF-3]** The system shall resolve relative paths in the config file relative to the **config file's parent directory**, not the current working directory. `~` shall expand to the user's home directory. `Status: Done` `Impl: config.py`
 
-### Input merging
+### Import semantics
 
-- **[CF-4]** When adding an input that is a **parent directory** of an existing input with the same root, the child input is automatically replaced by the parent. Files already imported from the child path are unaffected — they are not re-imported since their content hash is already known.
-- **[CF-5]** If a new parent input has a **different root** than an existing child input, the configuration is rejected with an error requiring the user to resolve the conflict (remove the child entry or change its root to match).
-- **[CF-6]** When adding an input that is a **child directory** of an existing input with the same root, it is a no-op — the parent already covers the child. A warning is logged.
-
-This supports incremental adoption: start with `~/Pictures/iPhone` to test, then broaden to `~/Pictures` once confident.
+- **[CF-7]** Import always uses **move** semantics — files are moved from `_input/<root>/` to the output tree. There is no per-folder `import_mode` setting. The user owns the question of whether to move or copy files *into* `_input/`; pinpoint owns everything from there. `Status: Done` `Impl: discovery.py`
 
 ### Path template syntax
 
@@ -1076,18 +1135,19 @@ roots:
 
 ### No confirmation dialogs
 
-- **[UX-1]** The UI must not use confirmation dialogs (`alert()`, `confirm()`, modal "Are you sure?" prompts). These are lazy substitutes for reversible design.
-- **[UX-2]** Instead, design every action to be **reversible**:
+- **[UX-1]** The UI shall not use confirmation dialogs (`alert()`, `confirm()`, modal "Are you sure?" prompts). `Status: Done`
+- **[UX-2]** The system shall design every action to be **reversible**: `Status: Done`
 
 | Action | Reversal |
 |--------|----------|
 | Edit a tag | Edit it again; the action log records every change |
-| Remove a file | Delete via Finder; source is intact (copy mode). Re-import by re-adding the source folder |
+| Reject a file | File moves to `_input/_rejections/`; restore by moving it back into `_input/<root>/` |
+| Remove a file | Delete via Finder. Use external backups for recovery — pinpoint owns the only copy |
 | Bulk tag change | Edit again; action log records every change |
-| Hate everything | Delete the output tree, adjust config, re-import from untouched sources |
 
-- **[UX-3]** For high-impact actions (bulk operations affecting many files), use **inline summaries** instead of confirmation dialogs. Show what will happen ("Applying `event:Hawaii Vacation` to 47 files") with a prominent action button — not a system dialog asking if you're sure.
-- **[UX-4]** The only exception is `pinpoint cleanup-sources` (CLI), which permanently deletes source files. CLI commands that destroy data require explicit `--confirm` flags or interactive confirmation, since they operate outside the undo model.
+
+- **[UX-3]** When performing high-impact actions (bulk operations affecting many files), the system shall show **inline summaries** instead of confirmation dialogs (e.g., "Applying `event:Hawaii Vacation` to 47 files" with a prominent action button). `Status: Not Started`
+- **[UX-4]** When a CLI command permanently destroys data, the system shall require an explicit `--confirm` flag or interactive confirmation. `Status: Not Started`
 
 ---
 
@@ -1100,3 +1160,83 @@ roots:
 - Music videos root (add when needed).
 - Custom root definitions (extend when needed).
 - Symlink libraries.
+
+---
+
+## Appendix A: Implementation Status Summary (v0.1, 1-python)
+
+### Coverage by Section
+
+| Section | Done | Partial | Not Started | Total |
+|---------|------|---------|-------------|-------|
+| §1 Core Model (CM) | 8 | 2 | 2 | 12 |
+| §2 Tag Taxonomy (TX) | 3 | 1 | 1 | 5 |
+| §3 Output Path (OP) | 9 | 1 | 1 | 11 |
+| §4 Review & Refinement (MQ) | 7 | 3 | 3 | 13 |
+| §5 Dedup & Stacking (DS) | 2 | 0 | 0 | 2 |
+| §6 AI Analysis (AI) | 9 | 0 | 1 | 10 |
+| §7 Search & Browse (LB) | 0 | 1 | 12 | 13 |
+| §8 Favorites (FV) | 1 | 0 | 2 | 3 |
+| §9 File Detail (FD) | 0 | 1 | 4 | 5 |
+| §10 Data Model (DM) | 3 | 0 | 0 | 3 |
+| §11 Output Monitoring (OM) | 0 | 0 | 10 | 10 |
+| §12 Tag Persistence (TP) | 8 | 0 | 3 | 11 |
+| §13 Configuration (CF) | 5 | 1 | 4 | 10 |
+| §14 UX Principles (UX) | 2 | 0 | 2 | 4 |
+| **Total** | **57** | **10** | **45** | **112** |
+
+```mermaid
+---
+config:
+  look: handDrawn
+---
+pie title Requirement Status (112 total)
+    "Done (57)" : 57
+    "Partial (10)" : 10
+    "Not Started (45)" : 45
+```
+
+### Major Implementation Gaps
+
+**Entire sections not started:**
+
+1. **§11 Output Monitoring (10 reqs)** — No filesystem watcher for the output tree. No rename/move/delete detection, no drift tracking, no missing files view.
+
+2. **§7 Search & Browse (12 of 13 not started)** — The home page folder-card browsing model is entirely unimplemented. No folder grouping, hero images, hierarchical drill-down, "Open in Finder", What's New, On This Day, or tag dictionary browser. Only basic LIKE search and root/class filters exist.
+
+**Critical partial implementations:**
+
+3. **[CM-5] Files as source of truth** — Tag writing works on accept, but `pinpoint rebuild` ([TP-9]) is not implemented, so the database is not actually rebuildable from files yet. This undermines the core promise.
+
+4. **[CF-10] Hot-reload** — `ConfigHolder` exists but the file watcher is not connected. Config changes require restart.
+
+**Feature gaps within implemented sections:**
+
+6. **[AI-6] Face labeling workflow** — Faces are detected but the interactive labeling → re-recognition pipeline is not implemented.
+
+7. **[MQ-3] Confidence-based sorting** — Review queue sorts by newest-first, not by confidence-ascending as specified. Users cannot efficiently find files that need the most attention.
+
+8. **[MQ-11]–[MQ-13] Batch review** — No table/list view, no bulk tag application, no row expansion. This is critical for large libraries.
+
+9. **[OM-8]–[OM-10] Missing files UI** — No dedicated UI view for browsing or dismissing missing file records.
+
+10. **[FV-2]–[FV-3] Favorites UI** — Schema exists but no star toggle or dedicated view.
+
+### EARS Compliance Notes
+
+This audit converted all 116 requirements from informal prose to EARS keyword-driven syntax:
+
+| EARS Pattern | Count | Examples |
+|-------------|-------|---------|
+| Ubiquitous (The system shall...) | 56 | CM-1, CM-2, OP-1, DM-1 |
+| Event-Driven (When...) | 35 | CM-4, CM-6, OP-9, OP-11, MQ-10, AI-3, OM-1 |
+| State-Driven (While...) | 10 | CM-3, CM-12, CM-13, MQ-1, MQ-8, FD-1, OM-8 |
+| Unwanted Behaviour (If...then) | 5 | OP-2, OP-8, CF-5, TP-11 |
+| Optional (Where...) | 3 | TP-6, TP-8 |
+| Combined | 7 | CM-4 (When + While), OP-7 (When + When) |
+
+**Patterns observed during conversion:**
+- Many original requirements were descriptions of data structures rather than testable behaviors. These were rewritten as "The system shall maintain..." (ubiquitous).
+- Output monitoring requirements mapped cleanly to event-driven patterns (When a file is renamed/deleted/added...).
+- Platform-specific behaviors (macOS Finder tags, Linux xattrs) mapped well to the optional "Where" pattern.
+- The "If...then" unwanted-behaviour pattern was underused — error handling and edge cases could benefit from more explicit requirements (e.g., what happens when the output directory is full, when a file is locked, when metadata is corrupt).

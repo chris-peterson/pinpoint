@@ -25,7 +25,7 @@ def create_app(db, config_holder) -> FastAPI:
         if not file:
             return HTMLResponse("Not found", status_code=404)
 
-        file_path = file["output_path"] if file["status"] == "imported" else file["source_path"]
+        file_path = file["output_path"]
         if not file_path or not os.path.exists(file_path):
             return HTMLResponse("File not found on disk", status_code=404)
 

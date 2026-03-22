@@ -264,7 +264,7 @@ function renderResultsList(results) {
   if (!results.length) return '';
   let html = '<ul class="results-list">';
   for (const r of results) {
-    const name = (r.output_path || r.source_path || '').split('/').pop();
+    const name = (r.output_path || '').split('/').pop();
     html += `
       <li>
         <a class="result-row" href="#/files/${r.id}">
@@ -272,7 +272,7 @@ function renderResultsList(results) {
           <span class="r-name">${escapeHtml(name)}</span>
           ${r.favorite ? '<span class="r-star">\u2605</span>' : ''}
           ${confidenceBadge(r.confidence)}
-          <span class="r-path">${escapeHtml(r.output_path || r.source_path || '')}</span>
+          <span class="r-path">${escapeHtml(r.output_path || '')}</span>
         </a>
       </li>
     `;
@@ -346,7 +346,7 @@ async function renderReview(el, params) {
 
   html += '<ul class="results-list">';
   for (const f of data.files) {
-    const name = (f.output_path || f.source_path || '').split('/').pop();
+    const name = (f.output_path || '').split('/').pop();
     html += `
       <li>
         <a class="result-row" href="#/files/${f.id}">
@@ -393,7 +393,7 @@ async function renderWhatsNew(el) {
 
   html += '<ul class="results-list">';
   for (const f of data.files) {
-    const name = (f.output_path || f.source_path || '').split('/').pop();
+    const name = (f.output_path || '').split('/').pop();
     html += `
       <li>
         <a class="result-row" href="#/files/${f.id}">
@@ -442,7 +442,7 @@ async function renderMissing(el) {
 
   html += '<ul class="results-list">';
   for (const f of data.files) {
-    const name = (f.output_path || f.source_path || '').split('/').pop();
+    const name = (f.output_path || '').split('/').pop();
     html += `
       <li class="missing-row" data-id="${f.id}">
         <div class="result-row">
@@ -551,7 +551,7 @@ async function renderFileDetail(el, fileId) {
   const actions = data.actions || [];
   const rootFields = ROOT_FIELDS[file.root] || [];
 
-  const fileName = (file.output_path || file.source_path || '').split('/').pop();
+  const fileName = (file.output_path || '').split('/').pop();
 
   let html = `<div class="file-detail-layout">`;
 
@@ -584,7 +584,6 @@ async function renderFileDetail(el, fileId) {
       <dt>Root</dt><dd>${file.root}</dd>
       <dt>Type</dt><dd>${file.file_class}</dd>
       ${file.output_path ? `<dt>Path</dt><dd>${escapeHtml(file.output_path)}</dd>` : ''}
-      ${file.source_path ? `<dt>Source</dt><dd>${escapeHtml(file.source_path)}</dd>` : ''}
       ${file.creation_date ? `<dt>Created</dt><dd>${file.creation_date}</dd>` : ''}
       ${file.imported_at ? `<dt>Imported</dt><dd>${file.imported_at}</dd>` : ''}
     </dl>

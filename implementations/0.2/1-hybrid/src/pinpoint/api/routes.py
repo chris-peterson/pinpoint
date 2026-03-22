@@ -12,12 +12,6 @@ from pinpoint.paths import derive_path
 router = APIRouter(prefix="/api")
 
 
-def _find_input_path(config: dict, source_path: str) -> str:
-    for inp in config.get("inputs", []):
-        if source_path.startswith(inp["path"]):
-            return inp["path"]
-    return ""
-
 
 async def _persist_tags(db, file_id: int, tags: dict, source: str = "manual"):
     for field, values in tags.items():
@@ -64,7 +58,7 @@ async def preview_path(file_id: int, request: Request):
         if isinstance(val, str) and val.strip():
             tags[field] = [val.strip()]
 
-    original_filename = Path(file["output_path"] or file["source_path"]).name
+    original_filename = Path(file["output_path"]).name
     path = derive_path(file["root"], tags, original_filename)
     return {"path": path}
 
@@ -141,14 +135,14 @@ async def update_tags(file_id: int, request: Request):
             tags["year"] = [cd[:4]]
 
         rel_path = derive_path(root, tags, original_filename)
-        new_full = os.path.join(config["output"], rel_path)
+        new_full = os.path.join(config["library"], rel_path)
 
         if new_full != file["output_path"]:
             os.makedirs(os.path.dirname(new_full), exist_ok=True)
             try:
                 shutil.move(file["output_path"], new_full)
                 old_dir = os.path.dirname(file["output_path"])
-                while old_dir != config["output"]:
+                while old_dir != config["library"]:
                     if os.path.isdir(old_dir) and not os.listdir(old_dir):
                         os.rmdir(old_dir)
                         old_dir = os.path.dirname(old_dir)
@@ -329,18 +323,18 @@ async def search(request: Request):
 
     like_q = f"%{q}%"
     results = await db.execute(
-        """SELECT f.id, f.output_path, f.source_path, f.root, f.file_class,
+        """SELECT f.id, f.output_path, f.root, f.file_class,
                   f.status, f.favorite, f.confidence,
                   GROUP_CONCAT(t.name, ', ') as tag_list
            FROM files f
            LEFT JOIN file_tags ft ON f.id = ft.file_id
            LEFT JOIN tags t ON ft.tag_id = t.id
            WHERE f.status IN ('imported', 'drifted')
-             AND (f.output_path LIKE ? OR f.source_path LIKE ? OR t.name LIKE ?)
+             AND (f.output_path LIKE ? OR t.name LIKE ?)
            GROUP BY f.id
            ORDER BY f.favorite DESC, f.imported_at DESC
            LIMIT 50""",
-        (like_q, like_q, like_q),
+        (like_q, like_q),
     )
 
     return {"results": [dict(r) for r in results]}
@@ -351,12 +345,12 @@ async def browse(request: Request):
     db = request.app.state.db
     config = request.app.state.config_holder.config
     folder_path = request.query_params.get("path", "")
-    output_prefix = config["output"]
+    library_prefix = config["library"]
 
     if folder_path:
-        search_prefix = os.path.join(output_prefix, folder_path) + "/"
+        search_prefix = os.path.join(library_prefix, folder_path) + "/"
     else:
-        search_prefix = output_prefix.rstrip("/") + "/"
+        search_prefix = library_prefix.rstrip("/") + "/"
     rows = await db.execute(
         """SELECT f.id, f.output_path, f.file_class, f.favorite, f.root, f.confidence,
                   GROUP_CONCAT(t.name, ', ') as tag_list
@@ -375,8 +369,8 @@ async def browse(request: Request):
     for row in rows:
         output = row["output_path"] or ""
         relative = output
-        if output.startswith(output_prefix):
-            relative = output[len(output_prefix):].lstrip("/")
+        if output.startswith(library_prefix):
+            relative = output[len(library_prefix):].lstrip("/")
 
         inner = relative
         if relative.startswith(folder_path + "/"):

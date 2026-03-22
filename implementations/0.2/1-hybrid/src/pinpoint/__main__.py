@@ -4,9 +4,9 @@ from pathlib import Path
 
 import uvicorn
 
-from pinpoint.config import ConfigHolder
+from pinpoint.config import ConfigHolder, ensure_library_layout
 from pinpoint.database import init_db
-from pinpoint.discovery import run_discovery
+from pinpoint.discovery import run_discovery, watch_inputs
 from pinpoint.app import create_app
 
 
@@ -20,13 +20,8 @@ async def main():
     holder = ConfigHolder(config_path)
     holder.load()
 
-    import_mode = holder.config.get("import_mode", "copy")
-    if import_mode == "move":
-        print(
-            "\033[33mWarning: Move mode enabled — source files will be deleted after import.\n"
-            "Source files cannot be recovered if the output is deleted.\n"
-            "Consider using copy mode unless you are disk-constrained.\033[0m"
-        )
+    ensure_library_layout(holder.config)
+    print(f"Library: {holder.config['library']}")
 
     db = await init_db(holder.config["data_dir"])
 
@@ -37,20 +32,23 @@ async def main():
     config = uvicorn.Config(app, host="0.0.0.0", port=args.port, log_level="info")
     server = uvicorn.Server(config)
 
-    async def periodic_discovery():
-        while True:
-            await asyncio.sleep(10)
-            try:
+    async def config_reload_loop():
+        """Periodically check for config file changes."""
+        try:
+            while True:
+                await asyncio.sleep(10)
                 holder.check_reload()
-                await run_discovery(db, holder.config)
-            except Exception as e:
-                print(f"Discovery error: {e}")
+        except asyncio.CancelledError:
+            pass
 
-    discovery_task = asyncio.create_task(periodic_discovery())
+    watcher_task = asyncio.create_task(watch_inputs(db, holder.config))
+    reload_task = asyncio.create_task(config_reload_loop())
+
     try:
         await server.serve()
     finally:
-        discovery_task.cancel()
+        watcher_task.cancel()
+        reload_task.cancel()
 
 
 if __name__ == "__main__":
