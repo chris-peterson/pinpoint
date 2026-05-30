@@ -10,10 +10,10 @@ fresh *args:
     just sample
     just run {{args}}
 
-# Create the sample library
+# Populate the sample library's _input/ tree
 sample:
-    rm -rf sample_library/ sample_output/
-    uv run python scripts/create_sample_library.py --output sample_library
+    rm -rf sample_output/
+    uv run python scripts/create_sample_library.py --output sample_output
 
 # Reset the database
 reset:

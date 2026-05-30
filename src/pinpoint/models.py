@@ -4,6 +4,7 @@ ROOT_FIELDS: dict[str, list[tuple[str, str]]] = {
     "memory": [("event", "Event"), ("person", "Person"), ("name", "Name")],
     "music": [
         ("artist", "Artist"),
+        ("feat", "Featured"),
         ("album", "Album"),
         ("year", "Year"),
         ("track", "Track"),
@@ -23,7 +24,7 @@ ROOT_FIELDS: dict[str, list[tuple[str, str]]] = {
 
 ALL_TAG_FIELDS = {f for fields in ROOT_FIELDS.values() for f, _ in fields}
 
-MULTI_VALUE_FIELDS = {"person"}
+MULTI_VALUE_FIELDS = {"person", "feat"}
 
 EXPECTED_TAGS: dict[str, list[str]] = {
     "memory": ["event", "name"],
@@ -35,7 +36,7 @@ EXPECTED_TAGS: dict[str, list[str]] = {
     "comedy": ["artist", "name"],
 }
 
-DERIVED_ATTRIBUTES = {"month", "year", "class"}
+DERIVED_ATTRIBUTES = {"month", "class"}
 
 ROOT_DIRS = {
     "memory": "memories",
@@ -60,7 +61,7 @@ SOURCE_WEIGHTS = {
 }
 
 ACTION_VERBS = [
-    "discover", "auto_import", "delete", "tag_add", "tag_remove", "tag_edit",
+    "discover", "auto_import", "stuck", "delete", "tag_add", "tag_remove", "tag_edit",
     "favorite", "unfavorite", "relocate", "rename", "move", "missing",
     "stack_create", "stack_reorder", "stack_dissolve",
 ]

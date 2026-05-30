@@ -99,6 +99,50 @@ def confidence_for_source(source: str) -> float:
     return SOURCE_WEIGHTS.get(source, 0.1)
 
 
+# A "feat." marker — possibly opened by a paren/bracket — separates the primary
+# artist from featured collaborators. Within the featured segment, collaborators
+# are separated by commas, ampersands, slashes, or "and"/"with".
+_FEAT_SPLIT = re.compile(r"[\s(\[]+(?:feat|ft|featuring)\.?\s+", re.IGNORECASE)
+_COLLAB_SPLIT = re.compile(r"\s*[,&/;]\s*|\s+(?:and|with)\s+", re.IGNORECASE)
+
+
+def parse_artists(raw_values: list[str]) -> tuple[str, list[str]]:
+    """Split raw artist metadata into a primary artist and featured collaborators.
+
+    Handles both multi-valued artist frames (the first value is primary, the rest
+    are featured) and a single string crediting collaborators with a "feat." marker
+    (e.g. "Jay-Z feat. Alicia Keys"). The primary artist string is never split on
+    "&"/"," so band names like "Earth, Wind & Fire" stay intact; only the segment
+    after an explicit feat marker is broken into multiple collaborators.
+    """
+    primary = ""
+    feats: list[str] = []
+    for i, entry in enumerate(raw_values):
+        entry = (entry or "").strip()
+        if not entry:
+            continue
+        segments = _FEAT_SPLIT.split(entry)
+        head = segments[0].strip().rstrip(" ([")
+        if i == 0:
+            primary = head
+        elif head:
+            feats.append(head)
+        for seg in segments[1:]:
+            seg = seg.strip().rstrip(")]").strip()
+            for name in _COLLAB_SPLIT.split(seg):
+                name = name.strip().strip(")]").strip()
+                if name:
+                    feats.append(name)
+
+    seen = {primary.lower()}
+    deduped: list[str] = []
+    for f in feats:
+        if f.lower() not in seen:
+            seen.add(f.lower())
+            deduped.append(f)
+    return primary, deduped
+
+
 async def extract_audio_metadata(file_path: str) -> dict:
     defs = {}
     try:
@@ -109,7 +153,11 @@ async def extract_audio_metadata(file_path: str) -> dict:
         if "title" in mf:
             defs["name"] = mf["title"][0]
         if "artist" in mf:
-            defs["artist"] = mf["artist"][0]
+            primary, feats = parse_artists(list(mf["artist"]))
+            if primary:
+                defs["artist"] = primary
+            if feats:
+                defs["feat"] = feats
         if "album" in mf:
             defs["album"] = mf["album"][0]
         if "date" in mf:

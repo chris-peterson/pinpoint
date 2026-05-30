@@ -60,12 +60,12 @@ Currently supports images, video, and audio. Designed to extend to any file type
 
 ### The Library
 
-A pinpoint **library** is a single directory that contains everything the system manages: an `_input/` folder where files arrive, a `_rejections/` quarantine inside `_input/`, and the per-root output trees as siblings.
+A pinpoint **library** is a single directory that contains everything the system manages: an `_input/` folder where files arrive, a `_stuck/` quarantine inside `_input/`, and the per-root output trees as siblings.
 
 ```text
 <library>/
 ├── _input/
-│   ├── _rejections/      # files pinpoint cannot or will not process
+│   ├── _stuck/           # files pinpoint can't place (failed or unclassifiable)
 │   ├── memory/           # drop photos/videos here → root:memory
 │   ├── music/            # drop audio here → root:music
 │   ├── tv/               # drop TV episodes here → root:tv
@@ -79,12 +79,12 @@ A pinpoint **library** is a single directory that contains everything the system
 └── …
 ```
 
-Files become managed by entering `_input/<root>/`. Pinpoint owns everything below the library root — moving a file from `_input/<root>/` to its derived output path (or to `_input/_rejections/`) is an internal rearrangement, never an operation against the user's original file.
+Files become managed by entering `_input/`. Dropping a file into a `_input/<root>/` subdirectory tags it with that root; dropping a file directly into `_input/` lets pinpoint infer the root from content (see [CF-FUT-1]). Pinpoint owns everything below the library root — moving a file from `_input/` to its derived output path (or to `_input/_stuck/`) is an internal rearrangement, never an operation against the user's original file.
 
-- **[CM-1]** The system shall manage a single **library** directory configured via `library:` (see §13). The system shall create and maintain `<library>/_input/<root>/` subdirectories for each known root and `<library>/_input/_rejections/` on startup if they do not already exist. `Status: Not Started`
-- **[CM-2]** The system shall treat any file appearing in `<library>/_input/<root>/` as a discovery with `root:<root>` as the default root tag. The system shall not scan paths outside the library. `Status: Not Started`
-- **[CM-CD]** When a watcher event fires on a file in `_input/<root>/`, the system shall delay processing until the file has been quiet (no further filesystem events, stable size and mtime) for a **quiet period** of at least 2 seconds. This gives in-progress copies time to complete before pinpoint reads the file. The quiet period shall be configurable. `Status: Not Started`
-- **[CM-A]** When the system cannot process a file (unsupported class, import failure, or explicit user rejection), the system shall move the file to `<library>/_input/_rejections/<root>/<relative-path>`, preserving the file's relative path under its `_input/<root>/` source. Intermediate directories shall be created as needed. The system shall not re-scan `_input/_rejections/`. `Status: Not Started`
+- **[CM-1]** The system shall manage a single **library** directory configured via `library:` (see §13). The system shall create and maintain `<library>/_input/<root>/` subdirectories for each known root and `<library>/_input/_stuck/` on startup if they do not already exist. `Status: Done` `Impl: config.py:ensure_library_layout`
+- **[CM-2]** The system shall treat any file appearing in `<library>/_input/<root>/` as a discovery with `root:<root>` as the default root tag. The system shall not scan paths outside the library. `Status: Done` `Impl: discovery.py`
+- **[CM-CD]** When a watcher event fires on a file in `_input/<root>/`, the system shall delay processing until the file has been quiet (no further filesystem events, stable size and mtime) for a **quiet period** of at least 2 seconds. This gives in-progress copies time to complete before pinpoint reads the file. The quiet period shall be configurable. `Status: Done` `Impl: discovery.py:watch_inputs`
+- **[CM-A]** When the system cannot place a file (unsupported class, import failure, or a bare drop whose root can't be inferred), the system shall move the file to `<library>/_input/_stuck/<relative-path>`, preserving the file's relative path under `_input/`. Intermediate directories shall be created as needed. The system shall not re-scan `_input/_stuck/`. `Status: Done` `Impl: discovery.py:_stick_file`
 
 ### File Lifecycle
 
@@ -100,8 +100,9 @@ flowchart LR
     D --> E[Imported]
     E -->|User edits tags| E
     E -->|External delete| F[Missing]
-    B -->|Unsupported / failure| R["_input/_rejections/"]
-    C -->|User rejects| R
+    B -->|Unsupported / failure| R["_input/_stuck/"]
+    A2["_input/ (bare drop)"] -->|Root can't be inferred| R
+    A2 -->|Root inferred| B
 ```
 
 - **[CM-3]** While a file is in the **analyzing** state, the system shall leave the file in place under `_input/<root>/` and compute a **confidence score** (0.0–1.0) from available tag sources. `Status: Done` `Impl: discovery.py`
@@ -195,7 +196,7 @@ Values: `memory`, `music`, `book`, `podcast`, `movie`, `tv`, `comedy`
 
 #### `date:` — Temporal metadata
 
-Every root has a `date` tag (YYYY-MM-DD). Derived from the best available source: embedded media metadata (EXIF, QuickTime, ID3) over filesystem dates. If no date can be determined, use the discovery date.
+Every root has a `date` tag (YYYY-MM-DD). Derived from the best available source, in order: embedded media metadata (EXIF, QuickTime, ID3), a date embedded in the filename (e.g. `IMG_20250115`, `2025-03-01` — common for phone and camera exports), then filesystem dates. If no date can be determined, use the discovery date.
 
 #### `favorite`
 
@@ -297,11 +298,20 @@ person:Grandma Rose
 
 #### `artist:` — Music and Comedy
 
-The performing artist or band.
+The performing artist or band. A track has exactly one `artist:` — the primary credit, which determines the output directory. Collaborators are recorded as `feat:` instead.
 
 ```
 artist:Pink Floyd
 artist:John Mulaney
+```
+
+#### `feat:` — Music only (optional, multi-value)
+
+Featured artists on a track. Multiple values are allowed. `feat:` tags are not path-relevant — only the primary `artist:` shapes the output path — so a collaboration files under the primary artist while still recording everyone involved for search.
+
+```
+feat:Alicia Keys
+feat:Pharrell
 ```
 
 #### `album:` — Music only
@@ -416,7 +426,7 @@ memories/{tag:month}/{tag:event*}/{tag:name?}<ext>
 | `name:Sunset Over Ocean` | `memories/2025-01/Sunset Over Ocean.jpg` |
 | `event:Hawaii Vacation:Snorkeling`, `name:Sunset Over Ocean` | `memories/2025-01/Hawaii Vacation/Snorkeling/Sunset Over Ocean.jpg` |
 
-- **[OP-2]** The system shall derive `month` (YYYY-MM) from `date`, determined from the best available source: embedded media metadata (EXIF, QuickTime) over filesystem dates. If no date can be determined, then the system shall use the discovery date. `Status: Partial — EXIF for images, not QuickTime` `Impl: paths.py`
+- **[OP-2]** The system shall derive `month` (YYYY-MM) from `date`, determined from the best available source, in order: embedded media metadata (EXIF, QuickTime), a date embedded in the filename, then filesystem dates. If no date can be determined, then the system shall use the discovery date. `Status: Partial — EXIF (images) + filename (images/video), not QuickTime` `Impl: discovery.py:_exif_capture_date, _filename_date`
 
 ### `root:music`
 
@@ -428,12 +438,14 @@ music/{tag:artist}/[{tag:year}] {tag:album?}/{tag:track} - {tag:name}<ext>
 
 - **[OP-3]** The system shall zero-pad `track` to a minimum of 2 digits for ordinal sorting. When no track number is available, the system shall use the name alone (no "\-" separator). `Status: Done` `Impl: paths.py:_derive_music, defaults.py:extract_audio_metadata`
 - **[OP-4]** When embedded metadata contains `albumartist = "Various Artists"`, the system shall set `artist:Various Artists` and preserve the original filename as-is. `Status: Done` `Impl: defaults.py:_defaults_music, paths.py:_derive_music`
+- **[OP-5]** When artist metadata credits more than one artist — either as multiple artist frames or via a `feat.`/`ft.`/`featuring` marker in a single string — the system shall keep the first as the primary `artist:` and record the remainder as `feat:` tags. The primary artist string shall not be split on `&`/`,` so band names (e.g. `Earth, Wind & Fire`) stay intact; only the segment after a feat marker is split into multiple collaborators. `Status: Done` `Impl: defaults.py:parse_artists`
 
 | Tags | Output path |
 |---|---|
 | `artist:Pink Floyd`, `album:Dark Side of the Moon`, `year:1973`, `track:01`, `name:Time` | `music/Pink Floyd/[1973] Dark Side of the Moon/01 - Time.flac` |
 | `artist:Pink Floyd`, `name:Another Brick` | `music/Pink Floyd/Another Brick.mp3` |
 | `artist:Various Artists`, `album:8 Mile Soundtrack`, `year:2002` | `music/Various Artists/[2002] 8 Mile Soundtrack/15 - Gang Starr - Battle.mp3` *(original filename)* |
+| `artist:Jay-Z`, `feat:Alicia Keys`, `name:Empire State of Mind` | `music/Jay-Z/Empire State of Mind.mp3` *(`feat:` is not path-relevant)* |
 | `name:Mystery Track` | `music/_unknown/Mystery Track.mp3` |
 | (none) | `music/_unknown/track-01.mp3` *(original filename)* |
 
@@ -855,7 +867,7 @@ A **folder** is a virtual grouping of imported files, derived from the primary g
 ### Core entities
 
 - **[DM-2]** The system shall maintain the following core tables: `Status: Done` `Impl: schema.sql, database.py`
-  - **files** — every known file. Tracks: `output_path`, lifecycle status (`analyzing`/`imported`/`rejected`/`missing`/`drifted`), root, class, content hash, perceptual hash, temporal metadata (`creation_date`, `discovery_date`, `imported_at`), favorite flag, stack membership, analysis state, **confidence score** (0.0–1.0), `last_indexed_at` (timestamp of last audit — validates input tags and output filename consistency). Files in the `rejected` state have `output_path` pointing into `_input/_rejections/`.
+  - **files** — every known file. Tracks: `output_path`, lifecycle status (`analyzing`/`imported`/`stuck`/`missing`/`drifted`), root, class, content hash, perceptual hash, temporal metadata (`creation_date`, `discovery_date`, `imported_at`), favorite flag, stack membership, analysis state, **confidence score** (0.0–1.0), `last_indexed_at` (timestamp of last audit — validates input tags and output filename consistency). Files in the `stuck` state have `output_path` pointing into `_input/_stuck/`.
   - **tags** — tag dictionary. Tracks: full name (e.g. `event:hawaii-vacation:snorkeling`), type (root/event/name/person/artist/author/album/title/show/season/series/general), whether built-in.
   - **file_tags** — associates files with tags. Tracks: region (face bounding box if applicable), when applied, **source** (`metadata`/`filename`/`api`/`ai`/`manual`), **confidence** (0.0–1.0 for this specific tag assignment).
 - **[DM-3]** The system shall maintain the following supporting tables: `Status: Done` `Impl: schema.sql`
@@ -868,7 +880,7 @@ A **folder** is a virtual grouping of imported files, derived from the primary g
 
 - **[DM-1]** The system shall maintain an **actions** table as an append-only audit trail of every state-changing operation. `Status: Done` `Impl: actions.py:log_action, all 17 verbs in models.py`
   - timestamp
-  - action verb: `discover`, `auto_import`, `reject`, `delete`, `tag_add`, `tag_remove`, `tag_edit`, `favorite`, `unfavorite`, `relocate`, `rename`, `move`, `missing`, `stack_create`, `stack_reorder`, `stack_dissolve`
+  - action verb: `discover`, `auto_import`, `stuck`, `delete`, `tag_add`, `tag_remove`, `tag_edit`, `favorite`, `unfavorite`, `relocate`, `rename`, `move`, `missing`, `stack_create`, `stack_reorder`, `stack_dissolve`
   - file id (nullable for system-level actions)
   - detail payload — action-specific context, e.g.:
     - `auto_import`: source path, destination path, confidence score
@@ -887,7 +899,7 @@ Not used for undo — just a queryable log for debugging and manual error recove
 
 ## 11. Output Monitoring
 
-The library is a regular folder. Users may interact with it directly via Finder, terminal, or other tools. Pinpoint watches the library and responds to external changes. The output trees (`memories/`, `music/`, …) and `_input/<root>/` are watched; `_input/_rejections/` is not re-scanned (see [CM-A]).
+The library is a regular folder. Users may interact with it directly via Finder, terminal, or other tools. Pinpoint watches the library and responds to external changes. The output trees (`memories/`, `music/`, …) and `_input/` are watched; `_input/_stuck/` is not re-scanned (see [CM-A]).
 
 ### File renamed
 
@@ -999,7 +1011,7 @@ Minimal. A library path. Everything else has sensible defaults in code.
 library: /Volumes/data/files
 ```
 
-The library directory holds both the `_input/` drop tree and the per-root output trees. Pinpoint creates `_input/<root>/` and `_input/_rejections/` on startup if they don't exist.
+The library directory holds both the `_input/` drop tree and the per-root output trees. Pinpoint creates `_input/<root>/` and `_input/_stuck/` on startup if they don't exist.
 
 - **[CF-LIB]** The system shall require a `library:` path in config. There is no default — the user shall pick a location (typically an external drive). The library shall not default to the user's home directory. `Status: Not Started`
 - **[CF-10]** When the config file changes on disk, the system shall hot-reload the configuration without requiring a restart. `Status: Partial — ConfigHolder exists, watcher not connected` `Impl: config.py`
@@ -1021,7 +1033,7 @@ sequenceDiagram
     participant O as &lt;library&gt;/&lt;root output tree&gt;/
 
     U->>FS: Pick library root (e.g. /Volumes/data/files)
-    P->>L: On first run, create _input/&lt;root&gt;/ and _input/_rejections/
+    P->>L: On first run, create _input/&lt;root&gt;/ and _input/_stuck/
     U->>L: mv ~/old/music/* /Volumes/data/files/_input/music/
     U->>L: mv ~/old/photos/* /Volumes/data/files/_input/memory/
     L-->>P: Watcher detects new files
@@ -1029,7 +1041,7 @@ sequenceDiagram
     alt Successful import
         P->>O: Move file to derived output path
     else Unsupported / failure
-        P->>L: Move file to _input/_rejections/
+        P->>L: Move file to _input/_stuck/
     end
 ```
 
@@ -1037,9 +1049,9 @@ A file is "under pinpoint control" the moment it lands in `_input/`. Whether the
 
 - **[CF-OB]** The system shall not require any pre-population of `_input/<root>/`. An empty library is valid and produces an empty output tree. `Status: Not Started`
 
-### Future: bare-drop classifier inference
+### Bare-drop classifier inference
 
-- **[CF-FUT-1]** *(Future)* When a file is dropped at the root of `_input/` (not inside a `_input/<root>/` subdirectory), the system shall infer the root from file class and content (mp3 → music, jpg → memory, …). Where inference is ambiguous, the system shall move the file to `_input/_rejections/` with a reason. `Status: FUT`
+- **[CF-FUT-1]** When a file is dropped at the root of `_input/` (not inside a `_input/<root>/` subdirectory), the system shall infer the root from file class and content: images → `memory`, audio → `music`, documents with a book extension (`.epub`, `.mobi`, `.azw`, `.azw3`, `.pdf`) → `book`, video with an `SxxExx` marker → `tv`, video with a year → `movie`. Where the root can't be inferred, the system shall move the file to `_input/_stuck/` with a reason. `Status: Done` `Impl: discovery.py:infer_root, discover_input_root_file`
 
 ### System paths
 
@@ -1141,7 +1153,7 @@ roots:
 | Action | Reversal |
 |--------|----------|
 | Edit a tag | Edit it again; the action log records every change |
-| Reject a file | File moves to `_input/_rejections/`; restore by moving it back into `_input/<root>/` |
+| File gets stuck | File moves to `_input/_stuck/`; restore by moving it back into `_input/<root>/` |
 | Remove a file | Delete via Finder. Use external backups for recovery — pinpoint owns the only copy |
 | Bulk tag change | Edit again; action log records every change |
 

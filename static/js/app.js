@@ -20,7 +20,7 @@ const ROOTS = ['memory', 'music', 'movie', 'tv', 'podcast', 'book', 'comedy'];
 
 const ROOT_FIELDS = {
   memory: [['event', 'Event'], ['person', 'Person'], ['name', 'Name']],
-  music: [['artist', 'Artist'], ['album', 'Album'], ['year', 'Year'], ['track', 'Track'], ['name', 'Name']],
+  music: [['artist', 'Artist'], ['feat', 'Featured'], ['album', 'Album'], ['year', 'Year'], ['track', 'Track'], ['name', 'Name']],
   movie: [['series', 'Series'], ['name', 'Title'], ['year', 'Year']],
   tv: [['show', 'Show'], ['season', 'Season'], ['episode', 'Episode'], ['name', 'Name']],
   podcast: [['show', 'Show'], ['episode', 'Episode'], ['name', 'Name']],
@@ -28,7 +28,7 @@ const ROOT_FIELDS = {
   comedy: [['artist', 'Artist'], ['name', 'Title'], ['year', 'Year']],
 };
 
-const MULTI_VALUE_FIELDS = new Set(['person']);
+const MULTI_VALUE_FIELDS = new Set(['person', 'feat']);
 
 const ICONS = {
   image: '\u{1F5BC}',
@@ -45,9 +45,11 @@ function confidenceBadge(confidence) {
   if (confidence == null) return '';
   const pct = Math.round(confidence * 100);
   let cls = 'conf-low';
-  if (confidence >= 0.7) cls = 'conf-high';
-  else if (confidence >= 0.4) cls = 'conf-med';
-  return `<span class="conf-badge ${cls}">${pct}%</span>`;
+  let level = 'low — auto-tagged from weak signals, worth reviewing';
+  if (confidence >= 0.7) { cls = 'conf-high'; level = 'high — auto-tags look reliable'; }
+  else if (confidence >= 0.4) { cls = 'conf-med'; level = 'medium — auto-tags may need a check'; }
+  const title = `Tag confidence ${pct}%: ${level}. Reflects how trustworthy the sources of the auto-detected tags are (embedded metadata, online lookup, filename, AI).`;
+  return `<span class="conf-badge ${cls}" title="${title}">${pct}%</span>`;
 }
 
 function escapeHtml(str) {
@@ -580,7 +582,8 @@ async function renderFileDetail(el, fileId) {
 
   html += `
     <dl class="file-meta">
-      <dt>Status</dt><dd>${file.status} ${confidenceBadge(file.confidence)}</dd>
+      <dt>Status</dt><dd>${file.status}</dd>
+      <dt title="How reliable the auto-detected tags are, based on their sources.">Confidence</dt><dd>${confidenceBadge(file.confidence)}</dd>
       <dt>Root</dt><dd>${file.root}</dd>
       <dt>Type</dt><dd>${file.file_class}</dd>
       ${file.output_path ? `<dt>Path</dt><dd>${escapeHtml(file.output_path)}</dd>` : ''}

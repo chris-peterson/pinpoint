@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Create a sample library with real files across all roots.
+"""Populate a sample library's _input/ tree with real files across all roots.
 
-Files have real metadata (EXIF for images, ID3 for MP3, Vorbis for FLAC)
-so they exercise the full discovery → defaults → path derivation pipeline.
+Files have real metadata (EXIF for images, ID3 for MP3, Vorbis for FLAC) and are
+written into <library>/_input/<root>/ — the same drop tree the running server
+watches — so the first run exercises the full discovery → defaults → path
+derivation → import pipeline. A few files are dropped directly in _input/ to
+exercise content-based root inference and the _stuck fallback.
 
 Usage:
-    uv run python scripts/create_sample_library.py [--output /path/to/sample]
+    uv run python scripts/create_sample_library.py [--output /path/to/library]
 
-Default output: ./sample_library/
+Default output: ./sample_output/ (matches config.yaml's `library:`)
 """
 
 from __future__ import annotations
 
 import argparse
-import io
-import struct
 import wave
-from datetime import datetime
 from pathlib import Path
 
 
@@ -204,13 +204,15 @@ def create_m4a(path: Path, *, artist: str = "", album: str = "",
 def create_video_stub(path: Path) -> None:
     """Create a minimal file with .mp4/.mkv extension (not playable, but discoverable)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    # Write a minimal MP4 ftyp box so it's at least recognized as video
+    # A per-file trailer keeps each stub's content distinct, so content-hash
+    # dedup doesn't collapse the (otherwise byte-identical) stubs into one.
+    unique = b"\x00" + path.name.encode("utf-8")
     if path.suffix.lower() in (".mp4", ".m4v", ".mov"):
         ftyp = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom"
-        path.write_bytes(ftyp)
+        path.write_bytes(ftyp + unique)
     else:
         # MKV/other — just write some bytes
-        path.write_bytes(b"\x1a\x45\xdf\xa3" + b"\x00" * 100)
+        path.write_bytes(b"\x1a\x45\xdf\xa3" + b"\x00" * 100 + unique)
 
 
 def create_pdf_stub(path: Path) -> None:
@@ -234,11 +236,16 @@ startxref
 
 
 def build_sample_library(base: Path) -> None:
-    """Create the full sample library."""
-    print(f"Creating sample library at: {base}")
+    """Populate the _input/ drop tree. `base` is the library's _input directory.
 
-    # ── memories ──────────────────────────────────────────────
-    mem = base / "memories"
+    Per-root files go in `base/<root>/`; the root names match the input roots the
+    server creates (memory, music, movie, tv, podcast, book, comedy). A few files
+    are dropped directly in `base/` to exercise content-based root inference.
+    """
+    print(f"Populating sample _input tree at: {base}")
+
+    # ── memory ────────────────────────────────────────────────
+    mem = base / "memory"
 
     # Vacation photos
     create_jpeg(mem / "Hawaii Vacation" / "IMG_4521.jpg",
@@ -254,15 +261,17 @@ def build_sample_library(base: Path) -> None:
     create_jpeg(mem / "Birthday Party" / "DSC_0002.jpg",
                 color=(255, 105, 180), exif_date="2024:12:20 15:30:00")
 
-    # Random unsorted photos
+    # Random unsorted photos. The screenshot has no EXIF — its date comes from
+    # the filename; photo_from_phone carries an EXIF capture date.
     create_png(mem / "screenshot_2025-03-01.png", color=(50, 50, 50))
     create_jpeg(mem / "photo_from_phone.jpg",
                 color=(200, 200, 100), exif_date="2025:02:14 09:45:00")
 
-    # Video
+    # Video. No EXIF is read for video, so the phone-style filename date is used.
     create_video_stub(mem / "Hawaii Vacation" / "sunset_timelapse.mp4")
+    create_video_stub(mem / "PXL_20250116_lagoon.mp4")
 
-    print("  ✓ memories (8 files)")
+    print("  ✓ memory")
 
     # ── music ─────────────────────────────────────────────────
     mus = base / "music"
@@ -296,10 +305,16 @@ def build_sample_library(base: Path) -> None:
                album="8 Mile Soundtrack", title="Battle",
                track="15", year="2002")
 
-    print("  ✓ music (10 files)")
+    # Collaboration: primary artist + featured. The "feat." credit is split so
+    # the track files under Jay-Z with feat:Alicia Keys recorded separately.
+    create_mp3(mus / "Jay-Z" / "The Blueprint 3" / "03 - Empire State of Mind.mp3",
+               artist="Jay-Z feat. Alicia Keys", album="The Blueprint 3",
+               title="Empire State of Mind", track="3", year="2009")
 
-    # ── movies ────────────────────────────────────────────────
-    mov = base / "movies"
+    print("  ✓ music")
+
+    # ── movie ─────────────────────────────────────────────────
+    mov = base / "movie"
 
     create_video_stub(mov / "The Dark Knight (2008).mkv")
     create_video_stub(mov / "Inception.2010.mkv")
@@ -312,7 +327,7 @@ def build_sample_library(base: Path) -> None:
     create_video_stub(mov / "Lord of the Rings" / "The Fellowship of the Ring (2001).mkv")
     create_video_stub(mov / "Lord of the Rings" / "The Two Towers (2002).mkv")
 
-    print("  ✓ movies (6 files)")
+    print("  ✓ movie")
 
     # ── tv ────────────────────────────────────────────────────
     tv = base / "tv"
@@ -328,10 +343,10 @@ def build_sample_library(base: Path) -> None:
     create_video_stub(bb / "Breaking.Bad.S01E01.Pilot.mkv")
     create_video_stub(bb / "Breaking.Bad.S01E02.Cats.in.the.Bag.mkv")
 
-    print("  ✓ tv (5 files)")
+    print("  ✓ tv")
 
-    # ── podcasts ──────────────────────────────────────────────
-    pod = base / "podcasts"
+    # ── podcast ───────────────────────────────────────────────
+    pod = base / "podcast"
 
     create_mp3(pod / "Hardcore History" / "ep66-Supernova in the East.mp3",
                artist="Dan Carlin", album="Hardcore History",
@@ -343,10 +358,10 @@ def build_sample_library(base: Path) -> None:
                artist="Sarah Koenig", album="Serial",
                title="The Alibi", track="1", year="2014")
 
-    print("  ✓ podcasts (3 files)")
+    print("  ✓ podcast")
 
-    # ── books (audiobooks) ────────────────────────────────────
-    books = base / "books"
+    # ── book (audiobooks) ─────────────────────────────────────
+    books = base / "book"
 
     hobbit = books / "J.R.R. Tolkien" / "The Hobbit"
     for i, ch in enumerate(["An Unexpected Party", "Roast Mutton", "A Short Rest"], 1):
@@ -358,7 +373,7 @@ def build_sample_library(base: Path) -> None:
                artist="Frank Herbert", album="Dune",
                title="A Beginning", track="1", year="1965")
 
-    print("  ✓ books (4 files)")
+    print("  ✓ book")
 
     # ── comedy ────────────────────────────────────────────────
     com = base / "comedy"
@@ -367,50 +382,57 @@ def build_sample_library(base: Path) -> None:
                artist="John Mulaney", title="Kid Gorgeous at Radio City", year="2018")
     create_video_stub(com / "Bo Burnham" / "Inside (2021).mp4")
 
-    print("  ✓ comedy (2 files)")
+    print("  ✓ comedy")
+
+    # ── bare drops (no subdir) — exercise content-based inference ──
+    # Dropped directly in _input/: pinpoint infers the root from content.
+    create_jpeg(base / "loose_phone_photo.jpg",
+                color=(180, 140, 90), exif_date="2025:05:10 17:30:00")  # → memory
+    create_mp3(base / "Gorillaz - Feel Good Inc.mp3",
+               artist="Gorillaz feat. De La Soul", title="Feel Good Inc",
+               album="Demon Days", track="6", year="2005")  # → music
+    # No content signal pinpoint can classify → parked in _input/_stuck/.
+    (base / "scan_2025_invoice.dat").write_bytes(b"opaque binary blob, unknown type")
+
+    print("  ✓ bare drops (memory, music, and one for _stuck)")
 
     # ── summary ───────────────────────────────────────────────
     total = sum(1 for _ in base.rglob("*") if _.is_file())
-    print(f"\nDone: {total} files across 7 roots")
-    print(f"Library path: {base.resolve()}")
+    print(f"\nDone: {total} files dropped into {base.resolve()}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Create a sample Pinpoint library")
+    parser = argparse.ArgumentParser(
+        description="Populate a sample Pinpoint library's _input/ tree"
+    )
     parser.add_argument(
         "--output", "-o",
-        default="./sample_library",
-        help="Output directory (default: ./sample_library)",
+        default="./sample_output",
+        help="Library directory (default: ./sample_output, matching config.yaml)",
     )
     parser.add_argument(
         "--clean", action="store_true",
-        help="Remove existing sample library before creating",
+        help="Remove the existing library before populating",
     )
     args = parser.parse_args()
 
-    base = Path(args.output)
+    library = Path(args.output)
+    input_dir = library / "_input"
 
-    if args.clean and base.exists():
+    if args.clean and library.exists():
         import shutil
-        shutil.rmtree(base)
-        print(f"Cleaned {base}")
+        shutil.rmtree(library)
+        print(f"Cleaned {library}")
 
-    if base.exists() and any(base.iterdir()):
-        print(f"Error: {base} already exists and is not empty. Use --clean to replace.")
+    if input_dir.exists() and any(input_dir.iterdir()):
+        print(f"Error: {input_dir} already exists and is not empty. Use --clean to replace.")
         raise SystemExit(1)
 
-    build_sample_library(base)
+    build_sample_library(input_dir)
 
-    # Print a matching config snippet
-    print(f"\nSuggested config.yaml:")
-    print(f"---")
-    print(f"inputs:")
-    for root in ("memories", "music", "movies", "tv", "podcasts", "books", "comedy"):
-        root_dir = base / root
-        if root_dir.exists():
-            print(f"  - path: {root_dir.resolve()}")
-            print(f"    root: {root}")
-    print(f"output: {(base.parent / 'sample_output').resolve()}")
+    print("\nPoint config.yaml at this library, then start the server:")
+    print(f"  library: {library.resolve()}")
+    print("Discovery imports everything from _input/ on first run.")
 
 
 if __name__ == "__main__":

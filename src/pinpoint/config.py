@@ -34,7 +34,7 @@ class ConfigHolder:
         )
 
         input_root = str(Path(library) / "_input")
-        rejections_dir = str(Path(input_root) / "_rejections")
+        stuck_dir = str(Path(input_root) / "_stuck")
         inputs = [
             {"path": str(Path(input_root) / root), "root": root}
             for root in ROOTS
@@ -43,7 +43,7 @@ class ConfigHolder:
         self.config = {
             "library": library,
             "input_root": input_root,
-            "rejections_dir": rejections_dir,
+            "stuck_dir": stuck_dir,
             "inputs": inputs,
             "data_dir": data_dir,
         }
@@ -58,8 +58,8 @@ class ConfigHolder:
 
 
 def ensure_library_layout(config: dict) -> None:
-    """Create _input/<root>/ and _input/_rejections/ if missing."""
+    """Create _input/<root>/ and _input/_stuck/ if missing."""
     Path(config["library"]).mkdir(parents=True, exist_ok=True)
-    Path(config["rejections_dir"]).mkdir(parents=True, exist_ok=True)
+    Path(config["stuck_dir"]).mkdir(parents=True, exist_ok=True)
     for inp in config["inputs"]:
         Path(inp["path"]).mkdir(parents=True, exist_ok=True)

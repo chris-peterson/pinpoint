@@ -4,13 +4,14 @@ Provides two discovery modes:
   1. Initial scan — walk every <library>/_input/<root>/ tree on startup.
   2. Continuous watch — use watchfiles to detect new files dropped into _input/<root>/.
 
-Files that cannot be processed are moved to <library>/_input/_rejections/, which is
-never re-scanned.
+Files that cannot be placed — an import failure, or a bare drop whose root can't be
+inferred — are moved to <library>/_input/_stuck/, which is never re-scanned.
 """
 
 import asyncio
 import hashlib
 import os
+import re
 import shutil
 import time
 from datetime import datetime
@@ -43,6 +44,51 @@ def _compute_phash(path: Path) -> str | None:
             return str(imagehash.phash(img))
     except Exception:
         return None
+
+
+# A full date embedded in a filename: YYYY-MM-DD / YYYY_MM_DD / YYYYMMDD (the
+# separators are optional and independent). Digit boundaries keep it from biting
+# into a longer run like a 14-digit timestamp. Phones and cameras name files this
+# way (IMG_20250115_103000, PXL_20250116, 2025-03-01 ...), which is a better date
+# signal than when the file landed on the current disk.
+_FILENAME_DATE = re.compile(r"(?<!\d)(\d{4})[-_.]?(\d{2})[-_.]?(\d{2})(?!\d)")
+_FILENAME_MONTH = re.compile(r"(?<!\d)(\d{4})[-_.](\d{2})(?!\d)")
+
+
+def _filename_date(path: Path) -> str | None:
+    """Return a date parsed from the filename as YYYY-MM-DD, or None.
+
+    Prefers a full date; falls back to a bare YYYY-MM (using day 01). Values
+    outside plausible year/month/day ranges are ignored so non-dates don't match.
+    """
+    stem = path.stem
+    for m in _FILENAME_DATE.finditer(stem):
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1900 <= y <= 2099 and 1 <= mo <= 12 and 1 <= d <= 31:
+            return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    for m in _FILENAME_MONTH.finditer(stem):
+        y, mo = int(m.group(1)), int(m.group(2))
+        if 1900 <= y <= 2099 and 1 <= mo <= 12:
+            return f"{m.group(1)}-{m.group(2)}-01"
+    return None
+
+
+def _exif_capture_date(path: Path) -> str | None:
+    """Return an image's EXIF capture date as YYYY-MM-DD, or None if unavailable."""
+    try:
+        from PIL import Image
+        from PIL.ExifTags import IFD
+
+        with Image.open(path) as img:
+            exif = img.getexif()
+            exif_ifd = exif.get_ifd(IFD.Exif)
+            # 36867 = DateTimeOriginal (Exif IFD); 306 = DateTime (root IFD).
+            raw = exif_ifd.get(36867) or exif.get(306)
+        if raw and len(raw) >= 10:
+            return raw[:10].replace(":", "-")
+    except Exception:
+        return None
+    return None
 
 
 def _phash_hamming(a: str, b: str) -> int:
@@ -99,12 +145,20 @@ async def discover_file(
     if dupe:
         return None
 
-    creation_date = None
-    try:
-        stat = path.stat()
-        creation_date = datetime.fromtimestamp(stat.st_birthtime).strftime("%Y-%m-%d")
-    except (AttributeError, OSError):
-        pass
+    # Best available capture date, in priority order (SPEC [OP-2]): embedded EXIF
+    # (images), then a date in the filename, then the filesystem birth time, and
+    # finally the discovery date. This is what month/year derive from.
+    creation_date = _exif_capture_date(path) if file_class == "image" else None
+    if creation_date is None and file_class in ("image", "video"):
+        creation_date = _filename_date(path)
+    if creation_date is None:
+        try:
+            stat = path.stat()
+            creation_date = datetime.fromtimestamp(stat.st_birthtime).strftime("%Y-%m-%d")
+        except (AttributeError, OSError):
+            pass
+    if creation_date is None:
+        creation_date = datetime.now().strftime("%Y-%m-%d")
 
     phash = None
     if file_class == "image":
@@ -130,6 +184,48 @@ async def discover_file(
     return file_id
 
 
+def infer_root(path: Path, file_class: str) -> str | None:
+    """Best-guess the root for a file dropped directly into _input/.
+
+    Returns a root name, or None when the content is too ambiguous to classify
+    (the caller routes those to _input/_stuck/ for manual sorting).
+    """
+    if file_class == "image":
+        return "memory"
+    if file_class == "audio":
+        return "music"
+    if file_class == "video":
+        stem = path.stem
+        if re.search(r"[Ss]\d{1,2}[Ee]\d{1,3}", stem):
+            return "tv"
+        if re.search(r"(?:19|20)\d{2}", stem):
+            return "movie"
+        return None
+    if file_class == "document":
+        if path.suffix.lower() in {".epub", ".mobi", ".azw", ".azw3", ".pdf"}:
+            return "book"
+        return None
+    return None
+
+
+async def discover_input_root_file(db, path: Path, config: dict) -> int | None:
+    """Handle a file dropped directly into _input/ (not a _input/<root>/ subdir).
+
+    Infers the root from file class and content. On success the file flows through
+    the normal import pipeline under the inferred root; when the root can't be
+    determined the file is parked in _input/_stuck/ for the user to classify.
+    """
+    file_class = classify_file(path.suffix.lower())
+    root = infer_root(path, file_class)
+    if root:
+        return await discover_file(db, path, file_class, root, config["input_root"], config)
+    return await _stick_file(
+        db, str(path), config,
+        reason="could not infer root from content",
+        file_class=file_class,
+    )
+
+
 async def run_discovery(db, config: dict):
     for inp in config.get("inputs", []):
         input_path = Path(inp["path"])
@@ -137,6 +233,20 @@ async def run_discovery(db, config: dict):
         if not input_path.exists():
             continue
         await _scan_input(db, input_path, root, config)
+    await _scan_input_root(db, config)
+
+
+async def _scan_input_root(db, config: dict):
+    """Scan files dropped directly into _input/ (top level only) and classify them."""
+    input_root = Path(config["input_root"])
+    if not input_root.exists():
+        return
+    for path in input_root.iterdir():
+        if not path.is_file():
+            continue
+        if path.name.startswith("."):
+            continue
+        await discover_input_root_file(db, path, config)
 
 
 async def _scan_input(db, input_path: Path, root: str, config: dict):
@@ -172,17 +282,17 @@ async def watch_inputs(db, config: dict):
         return
 
     input_lookup: dict[str, dict] = {}
-    watch_paths = []
     for inp in config.get("inputs", []):
-        p = Path(inp["path"])
-        if p.exists():
-            input_lookup[str(p)] = inp
-            watch_paths.append(p)
+        input_lookup[str(Path(inp["path"]))] = inp
 
-    if not watch_paths:
+    input_root = Path(config["input_root"])
+    if not input_root.exists():
         return
+    # awatch is recursive, so watching _input/ covers every _input/<root>/ subdir
+    # plus bare drops at the top level. Routing happens by longest-prefix match.
+    watch_paths = [input_root]
 
-    print(f"Watching {len(watch_paths)} input folder(s) for new files")
+    print(f"Watching {input_root} for new files")
 
     pending: dict[str, float] = {}
     last_stat: dict[str, tuple[int, float]] = {}
@@ -236,28 +346,38 @@ async def watch_inputs(db, config: dict):
 async def _process_pending(db, config: dict, input_lookup: dict[str, dict], path: Path):
     if not path.is_file():
         return
+    if path.name.startswith("."):
+        return
+
+    path_str = str(path)
+    if path_str.startswith(config["stuck_dir"]):
+        return
 
     file_class = classify_file(path.suffix.lower())
-    if file_class is None:
-        return
 
+    # Route to the most specific _input/<root>/ subdir that contains this file.
     inp = None
-    path_str = str(path)
+    best = -1
     for inp_str, inp_config in input_lookup.items():
-        if path_str.startswith(inp_str):
+        if path_str.startswith(inp_str + os.sep) and len(inp_str) > best:
             inp = inp_config
-            break
-    if inp is None:
+            best = len(inp_str)
+
+    if inp is not None:
+        root = inp["root"]
+        if file_class == "image" and root in ("music", "book", "podcast"):
+            if _dir_has_audio(path.parent):
+                return
+        file_id = await discover_file(db, path, file_class, root, inp["path"], config)
+        if file_id:
+            print(f"  Watcher discovered: {path.name}")
         return
 
-    root = inp["root"]
-    if file_class == "image" and root in ("music", "book", "podcast"):
-        if _dir_has_audio(path.parent):
-            return
-
-    file_id = await discover_file(db, path, file_class, root, inp["path"], config)
-    if file_id:
-        print(f"  Watcher discovered: {path.name}")
+    # A bare drop directly in _input/ — infer the root from content.
+    if path.parent == Path(config["input_root"]):
+        file_id = await discover_input_root_file(db, path, config)
+        if file_id:
+            print(f"  Watcher classified bare drop: {path.name}")
 
 
 async def _poll_discovery(db, config: dict):
@@ -279,18 +399,24 @@ async def _auto_import(db, file_id: int, source_path: str, root: str, input_path
     for field in ALL_TAG_FIELDS:
         if field in DERIVED_ATTRIBUTES:
             continue
-        val = merged.get(field, "")
-        if val:
-            tags[field] = [val]
-            sources[field] = source_for_field(field, defs["filename_defs"], defs["metadata_defs"])
+        val = merged.get(field)
+        if not val:
+            continue
+        tags[field] = val if isinstance(val, list) else [val]
+        sources[field] = source_for_field(field, defs["filename_defs"], defs["metadata_defs"])
 
     creation_date_row = await db.execute_one(
         "SELECT creation_date FROM files WHERE id = ?", (file_id,)
     )
-    if creation_date_row and creation_date_row["creation_date"]:
+    # The memory root organizes files by capture date, so both its month bucket
+    # and its year come from that one date. Other roots take year from metadata
+    # or the filename — a release year, not when the file landed on disk — and
+    # have no month.
+    if root == "memory" and creation_date_row and creation_date_row["creation_date"]:
         cd = creation_date_row["creation_date"]
         tags["month"] = [cd[:7]]
-        tags["year"] = [cd[:4]]
+        tags.setdefault("year", [cd[:4]])
+        sources.setdefault("year", "metadata")
 
     for field, values in tags.items():
         if field in DERIVED_ATTRIBUTES:
@@ -332,8 +458,8 @@ async def _auto_import(db, file_id: int, source_path: str, root: str, input_path
     try:
         shutil.move(source_path, candidate)
     except Exception as e:
-        print(f"Import failed for {source_path}: {e} — moving to _rejections/")
-        await _reject_file(db, file_id, source_path, config, reason=str(e))
+        print(f"Import failed for {source_path}: {e} — moving to _stuck/")
+        await _stick_file(db, source_path, config, reason=str(e), file_id=file_id)
         return
 
     await db.execute_write(
@@ -350,22 +476,45 @@ async def _auto_import(db, file_id: int, source_path: str, root: str, input_path
     })
 
 
-async def _reject_file(db, file_id: int, source_path: str, config: dict, reason: str):
-    """Move a file to <library>/_input/_rejections/<root>/<relative-path>/ and mark it rejected.
+async def _stick_file(
+    db, source_path: str, config: dict, reason: str,
+    file_id: int | None = None, file_class: str | None = None,
+) -> int | None:
+    """Move a file Pinpoint can't place into <library>/_input/_stuck/ and mark it 'stuck'.
 
-    Mirrors the file's path under _input/<root>/ so the rejection location preserves
-    the source context. Restoration is a single mv back into _input/<root>/.
+    Handles both situations that leave a file unplaced: an import that failed from
+    `_input/<root>/` (the file already has a record, passed as `file_id`) and a bare
+    drop whose root couldn't be inferred (no record yet — created here from
+    `file_class`). The file's path under `_input/` is mirrored into `_stuck/` so the
+    source context is preserved; restoration is a single mv back into `_input/`.
     """
     src = Path(source_path)
+
+    if file_id is None:
+        content_hash = _hash_file(src)
+        dupe = await db.execute_one(
+            "SELECT id FROM files WHERE content_hash = ?", (content_hash,)
+        )
+        if dupe:
+            return None
+        file_id = await db.execute_insert(
+            "INSERT INTO files (status, root, file_class, content_hash) VALUES ('stuck', '_stuck', ?, ?)",
+            (file_class, content_hash),
+        )
+        await db.log_action("discover", file_id, {
+            "source_path": str(src),
+            "content_hash": content_hash,
+        })
+
     input_root = Path(config["input_root"])
-    rejections_root = Path(config["rejections_dir"])
+    stuck_root = Path(config["stuck_dir"])
 
     try:
         rel = src.relative_to(input_root)
     except ValueError:
         rel = Path(src.name)
 
-    dest = rejections_root / rel
+    dest = stuck_root / rel
     counter = 1
     while dest.exists():
         dest = dest.parent / f"{src.stem}-{counter}{src.suffix}"
@@ -376,15 +525,16 @@ async def _reject_file(db, file_id: int, source_path: str, config: dict, reason:
     try:
         shutil.move(source_path, str(dest))
     except Exception as e:
-        print(f"Reject move failed for {source_path}: {e}")
-        return
+        print(f"Stuck move failed for {source_path}: {e}")
+        return None
 
     await db.execute_write(
-        "UPDATE files SET status = 'rejected', output_path = ? WHERE id = ?",
+        "UPDATE files SET status = 'stuck', output_path = ? WHERE id = ?",
         (str(dest), file_id),
     )
-    await db.log_action("reject", file_id, {
+    await db.log_action("stuck", file_id, {
         "source_path": source_path,
         "destination_path": str(dest),
         "reason": reason,
     })
+    return file_id
