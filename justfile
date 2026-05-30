@@ -1,10 +1,8 @@
-# Spec version and implementation to run
-spec := "0.2"
-impl := "1-hybrid"
+default: run
 
-# Run the current implementation
+# Run the server
 run *args:
-    just -f implementations/{{spec}}/{{impl}}/justfile run {{args}}
+    uv run python -m pinpoint --config config.yaml {{args}}
 
 # Reset database, recreate sample library, and run
 fresh *args:
@@ -12,25 +10,23 @@ fresh *args:
     just sample
     just run {{args}}
 
-# Run any implementation
-run-impl spec impl *args:
-    just -f implementations/{{spec}}/{{impl}}/justfile run {{args}}
-
-# Create sample library (shared across implementations)
+# Create the sample library
 sample:
     rm -rf sample_library/ sample_output/
-    cd implementations/{{spec}}/{{impl}} && uv run python ../../../scripts/create_sample_library.py --output ../../../sample_library
+    uv run python scripts/create_sample_library.py --output sample_library
 
-# Reset database for the current implementation
+# Reset the database
 reset:
-    just -f implementations/{{spec}}/{{impl}}/justfile reset
+    rm -f ~/.pinpoint/pinpoint.db
 
-# Run tests for the current implementation
+# Run tests
 test *args:
-    just -f implementations/{{spec}}/{{impl}}/justfile test {{args}}
+    uv run --extra dev pytest -v {{args}}
 
-# List available implementations
-list:
-    @echo "Spec versions:" && ls implementations/
-    @echo "---"
-    @echo "Current: {{spec}}/{{impl}}"
+# Lint
+lint:
+    uv run --extra dev ruff check src/
+
+# Format
+format:
+    uv run --extra dev ruff format src/

@@ -8,7 +8,7 @@ Pinpoint is a local-first, tag-based file organization system. Users point it at
 
 ## Project Status
 
-Active implementation: `implementations/1-python/` (FastAPI + HTMX + SQLite). See its `DECISIONS.md` for tech stack rationale.
+The implementation lives at the repo root: a Python (uv) FastAPI JSON API serving a vanilla JS single-page frontend, backed by SQLite. It was selected from an earlier round of parallel candidates; see `HISTORY.md` for what the retired experiments contributed.
 
 ## Key Constraints
 
@@ -47,29 +47,29 @@ Background worker processes pending files. Four pipelines: face detection/recogn
 
 ## Development Approach
 
-SPEC-driven development. `SPEC.md` is the canonical source of truth for requirements. Implementations live in `implementations/<num>-<name>/` and are treated as throwaway — we can restart fresh with a new numbered folder at any time.
+SPEC-driven development. `SPEC.md` is the canonical source of truth for requirements; the code at the root implements it.
 
 ### Commands
 
 ```
-just                    # run the current implementation
-just run-impl 2-go      # run a specific implementation
-just list               # list available implementations
+just                  # run the server (port 8420)
+just test             # run tests
+just lint             # ruff check
+just format           # ruff format
+just sample           # build the sample library
+just fresh            # reset db, rebuild sample library, run
 ```
 
-The root `justfile` has a `current` variable pointing to the active implementation. Each implementation has its own `justfile` with a `run` recipe.
-
-### Implementation 1: Python
+Or directly with uv:
 
 ```
-cd implementations/1-python
 uv run python -m pinpoint --config config.yaml   # run server (port 8420)
-uv run pytest -v                                  # run tests
-uv run ruff check src/                            # lint
-uv run ruff format src/                           # format
+uv run --extra dev pytest -v                      # run tests
+uv run --extra dev ruff check src/                # lint
+uv run --extra dev ruff format src/               # format
 ```
 
-Key modules: `paths.py` (core path derivation), `discovery.py` (file scanning/hashing), `api/queue.py` (accept/reject/skip), `web/routes.py` (HTML pages).
+Key modules (under `src/pinpoint/`): `paths.py` (core path derivation), `discovery.py` (file scanning/hashing), `config.py` (hot-reload YAML config), `database.py` (SQLite + schema), `api/routes.py` (JSON API). The vanilla JS frontend lives in `static/`.
 
 ## Reference Files
 

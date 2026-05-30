@@ -1,12 +1,12 @@
 # Implementation History
 
-## SPEC 0.2 (current)
+## SPEC 0.2 — graduated to the repo root
 
-### 0.2/1-hybrid — Python API + JS Frontend ← `just run` (current)
+### 0.2/1-hybrid — Python API + JS Frontend
 
 **Stack:** Python + uv, vanilla JS frontend, SQLite
 
-**Status:** Active implementation against the current v0.2 spec. This is what the root justfile runs (`spec := "0.2"`, `impl := "1-hybrid"`).
+**Status:** Selected as the implementation and flattened to the repo root. The `implementations/<spec>/<n>-<name>/` tree was retired once this was the de-facto choice — `just run` now runs it directly from root.
 
 ---
 

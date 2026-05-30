@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "case \"$CLAUDE_FILE_PATH\" in */implementations/*) echo 'REMINDER: Implementation file changed. If this is specific to this implementation, consider updating DECISIONS.md. If it defines a behavior/convention for all implementations, consider updating SPEC.md.' ;; esac"
+            "command": "case \"$CLAUDE_FILE_PATH\" in */src/pinpoint/*) echo 'REMINDER: Source file changed. If this changes a behavior or convention the system guarantees, consider updating SPEC.md.' ;; esac"
           }
         ]
       }

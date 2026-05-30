@@ -14,10 +14,11 @@ This is a greenfield project. The spec describes *what* the system should do, no
 
 ## Implementation conventions
 
-- Each implementation lives in `implementations/<num>-<name>/`.
-- Each implementation must include a `DECISIONS.md` documenting HOW/WHY choices were made (anything that's WHAT belongs in `SPEC.md`).
-- Each implementation must include a `.gitignore` tailored to its language/toolchain.
-- Each implementation must include a `justfile` with at minimum a `run` recipe.
+The project explored several parallel candidates under `implementations/<spec>/<n>-<name>/`; the Python + vanilla JS hybrid was selected and flattened to the repo root. See `HISTORY.md` for what each retired candidate contributed.
+
+- The code lives at the repo root: `src/pinpoint/` (Python package), `static/` (JS frontend), `tests/`.
+- The `justfile` exposes `run`, `test`, `lint`, `format`, `sample`, and `fresh`.
+- WHAT the system does belongs in `SPEC.md`; HOW/WHY a choice was made belongs alongside the code or in `HISTORY.md`.
 
 ## Build philosophy
 
