@@ -1,0 +1,7 @@
+- [Home](/)
+- [Getting started](/getting-started)
+- [The library](/library)
+- [Tags](/tags)
+- [Where files land](/paths)
+- [Configuration](/configuration)
+- [Requirements](/spec)

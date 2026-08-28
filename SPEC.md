@@ -93,12 +93,13 @@ Files become managed by entering `_input/`. Dropping a file into a `_input/<root
 config:
   look: handDrawn
 ---
-flowchart LR
+flowchart TD
     A["_input/&lt;root&gt;/"] --> B[Discovered]
     B --> C[Analyzing]
     C --> D[Auto-imported]
     D --> E[Imported]
-    E -->|User edits tags| E
+    E -->|Tag edit| RL[Relocate]
+    RL --> E
     E -->|External delete| F[Missing]
     B -->|Unsupported / failure| R["_input/_stuck/"]
     A2["_input/ (bare drop)"] -->|Root can't be inferred| R
@@ -122,43 +123,52 @@ config:
   look: handDrawn
 ---
 sequenceDiagram
-    participant FS as _input/&lt;root&gt;/
     participant D as Discovery
     participant DB as Database
-    participant AI as AI Analysis
-    participant P as Path Engine
-    participant O as Output Tree
+    participant AI as Analysis
+    participant P as Path engine
+    participant O as Output tree
+
+    D->>D: Hash (SHA-256)
+    D->>DB: Check hash
+    alt Duplicate
+        D-->>DB: Skip
+    else New
+        D->>DB: Insert (analyzing)
+        D->>DB: Root from subdir
+    end
+
+    par Background
+        DB->>AI: Queue file
+        AI->>AI: Read metadata
+        AI->>AI: Parse filename
+        AI->>AI: Faces, vision, lookup
+        AI->>DB: Tags + confidence
+    end
+
+    AI->>P: Derive from best tags
+    P-->>AI: Output path
+    AI->>O: Move file
+    AI->>DB: Status imported
+    AI->>DB: Log auto_import
+```
+
+Refinement happens on the user's own schedule, after the file is already placed:
+
+```mermaid
+---
+config:
+  look: handDrawn
+---
+sequenceDiagram
     participant UI as Review UI
+    participant P as Path engine
+    participant O as Output tree
 
-    FS->>D: New/changed file detected
-    D->>D: Hash file (SHA-256)
-    D->>DB: Check for duplicate hash
-    alt Duplicate found
-        D-->>DB: Skip (don't import)
-    else New file
-        D->>DB: Insert file (status: analyzing)
-        D->>DB: Set root from parent _input subdir
-    end
-
-    par Analysis (background)
-        DB->>AI: File queued for analysis
-        AI->>AI: Extract embedded metadata
-        AI->>AI: Parse filename for tags
-        AI->>AI: Run analysis pipeline (faces, vision, lookup)
-        AI->>DB: Store tags + compute confidence score
-    end
-
-    AI->>P: Auto-import: derive path from best tags
-    P-->>AI: Deterministic output path
-    AI->>O: Move file to output path
-    AI->>DB: Update status to imported, store confidence
-    AI->>DB: Log auto_import action
-
-    Note over UI: User browses library at leisure
-    UI->>UI: Filter to low confidence, date range, root, etc.
-    UI->>UI: Edit tags on files that need attention
-    UI->>P: Recompute path on tag change
-    P->>O: Relocate file if path changed
+    UI->>UI: Filter low confidence
+    UI->>UI: Edit tags
+    UI->>P: Recompute on change
+    P->>O: Relocate if changed
 ```
 
 ### Confidence scoring
@@ -230,7 +240,7 @@ Each root defines which tags are path-relevant. The schema below shows every roo
 config:
   look: handDrawn
 ---
-graph TD
+graph LR
     subgraph memory
         event["event:*"]
         person["person:"]
@@ -266,6 +276,13 @@ graph TD
         artist_c["artist:"]
         name_c["name:"]
     end
+    R{"root:"} --> artist_c
+    R --> author
+    R --> show_p
+    R --> show_t
+    R --> series_mv
+    R --> artist_mu
+    R --> event
 ```
 
 #### `name:` — Filename (all roots)
@@ -400,7 +417,7 @@ episode:05
 config:
   look: handDrawn
 ---
-flowchart TD
+flowchart LR
     root{root tag} -->|memory| mem["memories/{month}/{event*}/{name?}"]
     root -->|music| mus["music/{artist}/[{year}] {album?}/{track} - {name}"]
     root -->|movie| mov["movies/{series*}/{name} [{year}]"]
@@ -1027,21 +1044,21 @@ config:
 ---
 sequenceDiagram
     participant U as User
-    participant FS as File System
-    participant L as &lt;library&gt;/_input/&lt;root&gt;/
+    participant FS as File system
+    participant L as _input/
     participant P as Pinpoint
-    participant O as &lt;library&gt;/&lt;root output tree&gt;/
+    participant O as Output tree
 
-    U->>FS: Pick library root (e.g. /Volumes/data/files)
-    P->>L: On first run, create _input/&lt;root&gt;/ and _input/_stuck/
-    U->>L: mv ~/old/music/* /Volumes/data/files/_input/music/
-    U->>L: mv ~/old/photos/* /Volumes/data/files/_input/memory/
-    L-->>P: Watcher detects new files
-    P->>P: Hash, dedup, analyze, derive path
-    alt Successful import
-        P->>O: Move file to derived output path
-    else Unsupported / failure
-        P->>L: Move file to _input/_stuck/
+    U->>FS: Pick a library root
+    P->>L: Create _input/ tree
+    U->>L: Move music in
+    U->>L: Move photos in
+    L-->>P: Watcher fires
+    P->>P: Hash, analyze, derive
+    alt Placed
+        P->>O: Move to derived path
+    else Unsupported or failed
+        P->>L: Move to _input/_stuck/
     end
 ```
 

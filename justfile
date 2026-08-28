@@ -1,3 +1,4 @@
+# Run the server (alias for `run`)
 default: run
 
 # Run the server
@@ -30,3 +31,11 @@ lint:
 # Format
 format:
     uv run --extra dev ruff format src/
+
+# Stage the docs site (copies SPEC.md to where the sidebar links it)
+docs:
+    cp SPEC.md docs/spec.md
+
+# Preview the docs site locally
+preview-docs: docs
+    npx docsify-cli serve docs --open
